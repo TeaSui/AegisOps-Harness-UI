@@ -11,6 +11,7 @@ import { Activity } from './activity.ts';
 import { LEDGER_CATEGORIES, OUTCOMES, ackIntegrity, exportFindings, exportLedger, findings, integrity, ledger, triage, type FindingFilter, type LedgerFilter } from './audit.ts';
 import { rebuild } from './db.ts';
 import { Live } from './live.ts';
+import { doctor, hookStats, inventory, opsSeries, toolStats } from './inventory.ts';
 import { GROUPS, costSeries, resolveRange, topSessions } from './cost.ts';
 import { HANDLED } from './http.ts';
 import { intParam, notFound } from './http.ts';
@@ -215,6 +216,22 @@ export async function createApp(options: AppOptions): Promise<App> {
     const range = rangeOf(query);
     return topSessions(db, range.from, range.to, intParam(query, 'limit', 10, 1, 100));
   });
+
+  const span = (query: URLSearchParams) => ({ from: optIntParam(query, 'from') ?? 0, to: optIntParam(query, 'to') ?? Number.MAX_SAFE_INTEGER });
+  router.get('/api/ops/hooks', ({ query }) => {
+    const { from, to } = span(query);
+    return { items: hookStats(db, from, to) };
+  });
+  router.get('/api/ops/tools', ({ query }) => {
+    const { from, to } = span(query);
+    return toolStats(db, from, to);
+  });
+  router.get('/api/ops/series', ({ query }) => opsSeries(db, rangeOf(query)));
+  router.get('/api/ops/inventory', () => {
+    const { settings, plugins, mcpServers } = inventory(db, options.claudeHome, options.configFile);
+    return { settings, plugins, mcpServers };
+  });
+  router.get('/api/ops/doctor', () => doctor(db, options.claudeHome, options.configFile, indexer.priceTable.readable, now()));
 
   router.get('/api/ops/records', () => {
     const types = (db.prepare('SELECT type, SUM(n) count FROM type_counts GROUP BY type ORDER BY count DESC').all() as any[]).map((t) => ({

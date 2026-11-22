@@ -83,13 +83,13 @@ Test: node --test server/test/cost.test.ts
 ## T7: Is the harness healthy and configured as I think
 Blocked by: T1
 Covers: AEGIS-26..AEGIS-30
-Status: ready-for-agent
+Status: done
 What to build: per-hook and per-tool reliability with nearest-rank percentiles, MCP tools grouped by server, API errors and compactions over time, the configuration inventory with every credential masked, the unknown-record counts and the doctor checks with evidence.
-- [ ] A hook's runs, failures, blocks, median and 95th percentile match the fixture
-- [ ] A tool's calls, error rate, denial rate and 95th percentile match the fixture; MCP tools group by server
-- [ ] API errors and compactions are bucketed over time
-- [ ] The inventory lists settings by scope, rules, hooks, plugins and MCP servers and no environment or header value
-- [ ] Each doctor check reports pass, warn or fail with its evidence on the fixture
+- [x] A hook's runs, failures, blocks, median and 95th percentile match the fixture
+- [x] A tool's calls, error rate, denial rate and 95th percentile match the fixture; MCP tools group by server
+- [x] API errors and compactions are bucketed over time
+- [x] The inventory lists settings by scope, rules, hooks, plugins and MCP servers and no environment or header value
+- [x] Each doctor check reports pass, warn or fail with its evidence on the fixture
 Test: node --test server/test/ops.test.ts
 
 ## T8: Launch and stop a headless run, only in control mode
