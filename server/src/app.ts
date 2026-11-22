@@ -10,6 +10,7 @@ import { Timelines, contextSeries, filesTouched } from './timeline.ts';
 import { Activity } from './activity.ts';
 import { LEDGER_CATEGORIES, OUTCOMES, ackIntegrity, exportFindings, exportLedger, findings, integrity, ledger, triage, type FindingFilter, type LedgerFilter } from './audit.ts';
 import { rebuild } from './db.ts';
+import { Live } from './live.ts';
 import { HANDLED } from './http.ts';
 import { intParam, notFound } from './http.ts';
 
@@ -38,6 +39,8 @@ export type App = {
   index: (options?: { deep?: boolean }) => Promise<void>;
   /** Drops the derived tables and indexes everything again. Triage and alerts are kept. */
   rebuild: () => Promise<void>;
+  /** Checks the live-session registry now (the server also does this on a timer when watching). */
+  pollLive: () => Promise<void>;
   close: () => Promise<void>;
 };
 
@@ -54,6 +57,8 @@ export async function createApp(options: AppOptions): Promise<App> {
   const activity = new Activity(stateDir, now);
   const timelines = new Timelines(db, options.claudeHome, join(options.claudeHome, 'projects'));
   const deps: Deps = { db, indexer, options, now, stateDir, activity, timelines };
+  const live = new Live(db, options.claudeHome, now);
+  indexer.onChange = (ids) => live.notifyIndex(ids);
   const router = new Router();
 
   router.get('/api/overview', () => {
@@ -77,8 +82,15 @@ export async function createApp(options: AppOptions): Promise<App> {
 
   router.get('/api/projects', () => ({ items: projects(db) }));
 
-  router.get('/api/sessions', ({ query }) =>
-    listSessions(db, {
+  router.get('/api/live', () => live.snapshot());
+  router.get('/api/events', ({ res }) => {
+    live.open(res);
+    return HANDLED;
+  });
+
+  router.get('/api/sessions', ({ query }) => {
+    const running = live.runningIds();
+    const result = listSessions(db, {
       q: strParam(query, 'q', 200),
       project: strParam(query, 'project'),
       model: strParam(query, 'model'),
@@ -87,13 +99,14 @@ export async function createApp(options: AppOptions): Promise<App> {
       to: optIntParam(query, 'to'),
       errors: query.get('errors') === '1',
       risk: optEnumParam(query, 'risk', SEVERITIES),
-      ids: null,
+      ids: query.get('live') === '1' ? [...running] : null,
       sort: enumParam(query, 'sort', ['last', 'cost', 'duration'] as const, 'last'),
       ...page(query),
-    }),
-  );
+    });
+    return { ...result, items: result.items.map((s) => ({ ...s, live: running.has(s.id) })) };
+  });
 
-  router.get('/api/sessions/:id', ({ params }) => getSession(db, params.id));
+  router.get('/api/sessions/:id', ({ params }) => ({ ...getSession(db, params.id), live: live.runningIds().has(params.id) }));
 
   const agentParam = (query: URLSearchParams) => {
     const agent = strParam(query, 'agent', 100);
@@ -213,6 +226,8 @@ export async function createApp(options: AppOptions): Promise<App> {
     throw e;
   }
 
+  if (options.watch) live.watch(indexer);
+
   return {
     port,
     address: (door.server.address() as { address: string }).address,
@@ -227,7 +242,9 @@ export async function createApp(options: AppOptions): Promise<App> {
       indexer.reset();
       await indexer.pass();
     },
+    pollLive: async () => live.poll(),
     close: async () => {
+      live.close();
       await door.close();
       await indexer.pass([]).catch(() => undefined);
       db.close();

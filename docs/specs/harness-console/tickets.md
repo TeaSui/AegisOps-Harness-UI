@@ -62,11 +62,11 @@ Test: node --test server/test/audit.test.ts
 ## T5: What is running now and what needs me
 Blocked by: T4
 Covers: AEGIS-9..AEGIS-11
-Status: ready-for-agent
+Status: done
 What to build: the Now data shows sessions whose process is alive with the harness's status, hides registry entries of dead processes, pushes an event when a transcript grows or the registry changes, and lists the attention reasons per session.
-- [ ] A registry entry with a live process is running; one with a dead or malformed process id is not
-- [ ] An append to a transcript produces an `index` push event naming the session
-- [ ] Each attention reason appears for its fixture session and not for the others
+- [x] A registry entry with a live process is running; one with a dead or malformed process id is not
+- [x] An append to a transcript produces an `index` push event naming the session
+- [x] Each attention reason appears for its fixture session and not for the others
 Test: node --test server/test/live.test.ts
 
 ## T6: Where the money goes
