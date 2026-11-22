@@ -21,13 +21,13 @@ Test: node --test server/test/index.test.ts
 ## T2: Loopback-only access with a per-start token
 Blocked by: T1
 Covers: AEGIS-34
-Status: ready-for-agent
+Status: done
 What to build: the console answers only to its own origin on loopback: the start URL's token is exchanged for a cookie, every other request needs it, a foreign Host is refused first, state-changing requests need the right Origin and header, and responses carry the security headers.
-- [ ] A request without the token gets 401; with the cookie from the exchange it gets 200
-- [ ] A foreign Host gets 403 even with a valid token
-- [ ] A state-changing request without the matching Origin or without the header gets 403
-- [ ] No response has a CORS allow header; every response has the content security policy, nosniff and no-referrer
-- [ ] Repeated failed token attempts are throttled with 429
+- [x] A request without the token gets 401; with the cookie from the exchange it gets 200
+- [x] A foreign Host gets 403 even with a valid token
+- [x] A state-changing request without the matching Origin or without the header gets 403
+- [x] No response has a CORS allow header; every response has the content security policy, nosniff and no-referrer
+- [x] Repeated failed token attempts are throttled with 429
 Test: node --test server/test/access.test.ts
 
 ## T3: Find a session and read what happened in it

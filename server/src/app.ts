@@ -25,6 +25,8 @@ export type AppOptions = {
 
 export type App = {
   port: number;
+  /** The address the listener is bound to: always loopback. */
+  address: string;
   token: string;
   url: string;
   index: (options?: { deep?: boolean }) => Promise<void>;
@@ -82,6 +84,11 @@ export async function createApp(options: AppOptions): Promise<App> {
 
   router.get('/api/sessions/:id', ({ params }) => getSession(db, params.id));
 
+  router.post('/api/audit/verify', async () => {
+    const stats = await indexer.pass(undefined, { deep: true });
+    return { files: stats.files, at: stats.at };
+  });
+
   router.get('/api/ops/records', () => {
     const types = (db.prepare('SELECT type, SUM(n) count FROM type_counts GROUP BY type ORDER BY count DESC').all() as any[]).map((t) => ({
       type: t.type,
@@ -105,6 +112,7 @@ export async function createApp(options: AppOptions): Promise<App> {
 
   return {
     port,
+    address: (door.server.address() as { address: string }).address,
     token: door.token,
     url: `http://127.0.0.1:${port}/?token=${door.token}`,
     index: async (o) => {
