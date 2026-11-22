@@ -123,6 +123,8 @@ export function inventory(db: Db, claudeHome: string, configFile: string) {
   };
   for (const p of MANAGED) consider('managed', p, p, null);
   consider('user', join(claudeHome, 'settings.json'), 'settings.json', null);
+  // the sources every installation has are named when they are missing; project files may simply not exist
+  if (existsSync(claudeHome) && !existsSync(join(claudeHome, 'settings.json'))) unreadable.push('settings.json (user, not found)');
 
   if (!existsSync(claudeHome)) unreadable.push('the Claude home (not found)');
   const cwds = (db.prepare('SELECT DISTINCT cwd FROM sessions WHERE cwd IS NOT NULL ORDER BY cwd LIMIT 2000').all() as Array<{ cwd: string }>).map((r) => r.cwd);
@@ -143,6 +145,7 @@ export function inventory(db: Db, claudeHome: string, configFile: string) {
   const registryPath = join(claudeHome, 'plugins', 'installed_plugins.json');
   const registry = readJson(registryPath);
   if (registry.found && !registry.readable) unreadable.push(relative(claudeHome, registryPath));
+  if (existsSync(claudeHome) && !registry.found) unreadable.push(`${relative(claudeHome, registryPath)} (not found)`);
   const enabledIn = new Map<string, Set<string>>();
   for (const s of settings) for (const p of s.enabledPlugins) if (p.enabled) (enabledIn.get(p.id) ?? enabledIn.set(p.id, new Set()).get(p.id)!).add(s.scope);
   const plugins: Array<Record<string, unknown>> = [];

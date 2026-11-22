@@ -35,8 +35,11 @@ export class Timelines {
   private projectsDir: string;
   private cache = new Map<string, Item[]>();
 
-  constructor(db: Db, claudeHome: string, projectsDir: string) {
+  private maxLine: number;
+
+  constructor(db: Db, claudeHome: string, projectsDir: string, maxLine = MAX_LINE) {
     this.db = db;
+    this.maxLine = maxLine;
     this.claudeHome = claudeHome;
     this.projectsDir = projectsDir;
   }
@@ -85,7 +88,7 @@ export class Timelines {
     const tools = new Map<string, Item>();
     let lastTs = 0;
     let mode: string | null = null;
-    forEachLine(file.path, file.offset, MAX_LINE, (buf, line) => {
+    forEachLine(file.path, file.offset, this.maxLine, (buf, line) => {
       if (!buf || buf.length === 0) return;
       if (buf.length >= REQUEST_LOG_PREFIX.length && buf.subarray(0, REQUEST_LOG_PREFIX.length).equals(REQUEST_LOG_PREFIX)) return;
       let rec: any;
@@ -113,6 +116,8 @@ export class Timelines {
         /* a record of an unexpected shape is left out of the timeline */
       }
     });
+    // a stable number per row: several blocks of one response share a line, a time and a response id
+    items.forEach((item, i) => (item.seq = i));
     return items;
   }
 
@@ -243,7 +248,7 @@ export class Timelines {
     if (!Number.isInteger(line) || line < 1 || line > file.lines) throw notFound();
     this.readable(file);
     let found: Buffer | null | undefined;
-    forEachLine(file.path, file.offset, MAX_LINE, (buf, n) => {
+    forEachLine(file.path, file.offset, this.maxLine, (buf, n) => {
       if (n === line) {
         found = buf ? Buffer.from(buf) : null;
         return false;
@@ -251,7 +256,7 @@ export class Timelines {
     });
     if (found === undefined) throw notFound();
     const base = { file: file.id, line, session: file.session_id, agentId: file.agent_id, path: relative(this.claudeHome, file.path) };
-    if (found === null) return { ...base, text: '', truncated: true, note: 'This line is larger than 32 MB and is not shown.' };
+    if (found === null) return { ...base, text: '', truncated: true, masked: !reveal, note: 'This line is larger than the line limit and is not shown.' };
     const raw = found.toString('utf8');
     let text = raw;
     try {

@@ -19,7 +19,13 @@ process.stdin.on('end', () => {
   fs.mkdirSync(dir, { recursive: true });
   const rec = { type: 'user', uuid: 'u1', sessionId: sid, cwd: process.cwd(), timestamp: '${new Date(T0).toISOString()}', entrypoint: 'sdk-cli', promptSource: 'sdk', message: { role: 'user', content: input } };
   fs.writeFileSync(path.join(dir, sid + '.jsonl'), JSON.stringify(rec) + '\\n');
-  if (input.includes('fail')) { console.error('stub: something went wrong'); process.exit(3); }
+  if (input.includes('fail')) { console.error('stub: something went wrong, password=stubsecret99'); process.exit(3); }
+  if (input.includes('register')) {
+    const reg = path.join(process.env.STUB_CLAUDE_HOME, 'sessions');
+    fs.mkdirSync(reg, { recursive: true });
+    fs.writeFileSync(path.join(reg, process.pid + '.json'), JSON.stringify({ pid: process.pid, sessionId: sid, cwd: process.cwd(), status: 'busy', kind: 'headless', startedAt: Date.now() }));
+  }
+  if (input.includes('stubborn')) process.on('SIGINT', () => {});
   if (input.includes('sleep')) setInterval(() => {}, 1000); else process.exit(0);
 });
 `;
@@ -110,7 +116,7 @@ test('AEGIS-31 a run that fails keeps its exit code and the end of its error out
       return r.state === 'exited' ? r : undefined;
     }, 'the run to exit');
     assert.equal(done.exitCode, 3);
-    assert.match(done.stderrTail, /something went wrong/);
+    assert.match(done.stderrTail, /something went wrong, password=\[masked:value\]/); // child output is masked like any text
   }));
 
 test('AEGIS-32 a launched run can be stopped; an unknown run cannot', () =>
@@ -131,6 +137,34 @@ test('AEGIS-32 a launched run can be stopped; an unknown run cannot', () =>
     assert.equal((await c.post('/api/runs/does-not-exist/stop')).status, 404);
     assert.equal((await c.post(`/api/runs/${process.pid}/stop`)).status, 404);
     assert.ok((await c.get('/api/audit/activity')).items.some((a: any) => a.action === 'run-stop' && a.run === run.id));
+  }));
+
+test('AEGIS-31 AEGIS-32 a launched run shows among the live sessions, and one that ignores the interrupt is killed', () =>
+  withControl(async ({ c, out, project }) => {
+    const run: any = await (await c.post('/api/runs', { project: '-repo', prompt: 'register, be stubborn and sleep', permissionMode: 'plan' })).json();
+    await until(() => existsSync(join(out, `${run.sessionId}.invocation.json`)), 'the stub to start');
+    await c.app.index();
+    const live = await c.get('/api/live');
+    const mine = live.sessions.find((s: any) => s.id === run.sessionId);
+    assert.deepEqual({ status: mine.status, cwd: mine.cwd, entrypoint: mine.entrypoint }, { status: 'busy', cwd: project, entrypoint: 'sdk-cli' });
+    const asked = Date.now();
+    await c.post(`/api/runs/${run.id}/stop`);
+    const ended = await until(async () => {
+      const r = await runState(c, run.id);
+      return r.state === 'exited' ? r : undefined;
+    }, 'the stubborn run to be killed', 12_000);
+    assert.equal(ended.signal, 'SIGKILL');
+    assert.ok(Date.now() - asked >= 4500, 'the kill came before the 5 second grace');
+    assert.equal((await c.get('/api/live')).sessions.some((s: any) => s.id === run.sessionId), false);
+  }));
+
+test('AEGIS-31 a run starts in the project folder even when the latest session had moved into a subfolder', () =>
+  withControl(async ({ c, home, out, project, invocation }) => {
+    home.transcript('-repo', 'moved', [rec.prompt({ sid: 'moved', cwd: project + '/packages/deep', at: T0 + 9_000_000 }, 'later work in a subfolder')]);
+    await c.app.index();
+    const run: any = await (await c.post('/api/runs', { project: '-repo', prompt: 'hello', permissionMode: 'plan' })).json();
+    await until(() => existsSync(join(out, `${run.sessionId}.invocation.json`)), 'the stub to start');
+    assert.equal(invocation(run.sessionId).cwd, project);
   }));
 
 test('AEGIS-33 a bypass mode, a bad model, an unknown project and a bad prompt are refused and nothing starts', () =>

@@ -345,7 +345,7 @@ export function Session({ id, query }: { id: string; query: URLSearchParams }) {
           ) : null}
         </div>
         {s?.resumeCommand ? (
-          <button className="btn" title="Interactive work stays in the terminal" onClick={() => copyText(`cd ${JSON.stringify(s.cwd ?? '.')} && ${s.resumeCommand}`, toast, 'Resume command copied')}>
+          <button className="btn" title="Interactive work stays in the terminal" onClick={() => copyText(s.resumeCommand, toast, 'Resume command copied')}>
             <Icon name="copy" size={15} />Copy resume command
           </button>
         ) : null}
@@ -410,7 +410,7 @@ export function Session({ id, query }: { id: string; query: URLSearchParams }) {
               const c = clock(item.ts);
               const showTime = c !== lastClock;
               lastClock = c;
-              return <Row key={`${item.kind}-${item.line}-${item.id ?? item.messageId ?? ''}-${item.ts}`} item={item} showTime={showTime} findings={item.kind === 'tool' ? byTool.get(item.id) : undefined} sessionId={id} />;
+              return <Row key={item.seq} item={item} showTime={showTime} findings={item.kind === 'tool' ? byTool.get(item.id) : undefined} sessionId={id} />;
             })}
           </div>
           {timeline.loading ? (

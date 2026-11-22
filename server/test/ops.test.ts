@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { Home, PRICES, rec, start, T0, type Client } from './fixture.ts';
 
@@ -198,11 +198,22 @@ test('AEGIS-30 a hook that fails often is flagged; a clean home passes every che
   const clean = new Home();
   clean.transcript('-work-alpha', 's', [rec.prompt({ sid: 's', at: T0 }, 'hi')]);
   clean.file('settings.json', JSON.stringify({ permissions: { allow: ['Bash(ls:*)'], defaultMode: 'default' } }));
+  clean.file('plugins/installed_plugins.json', JSON.stringify({ version: 2, plugins: {} }));
   const c = await start(clean);
   try {
     const doctor = await c.get('/api/ops/doctor');
     assert.deepEqual(doctor.checks.filter((x: any) => x.status !== 'pass').map((x: any) => x.id), []);
     assert.ok(doctor.checks.length >= 8);
+    // the sources every installation has are named when they are missing
+    rmSync(join(clean.claudeHome, 'settings.json'));
+    rmSync(join(clean.claudeHome, 'plugins', 'installed_plugins.json'));
+    clean.config({});
+    await c.app.index();
+    const missing = (await c.get('/api/ops/doctor')).checks.find((x: any) => x.id === 'sources.unreadable');
+    assert.equal(missing.status, 'warn');
+    assert.match(missing.evidence.join('\n'), /settings\.json \(user, not found\)/);
+    assert.match(missing.evidence.join('\n'), /installed_plugins\.json \(not found\)/);
+    assert.match(missing.evidence.join('\n'), /price table/);
   } finally {
     await c.close();
     clean.destroy();

@@ -43,9 +43,8 @@ export class Router {
   }
   match(method: string, pathname: string): { handler: Handler; params: Record<string, string> } | null {
     const parts = pathname.split('/').filter(Boolean);
-    const want = method === 'HEAD' ? 'GET' : method;
     for (const r of this.routes) {
-      if (r.method !== want || r.parts.length !== parts.length) continue;
+      if (r.method !== method || r.parts.length !== parts.length) continue;
       const params: Record<string, string> = {};
       let ok = true;
       for (let i = 0; i < parts.length; i++) {
@@ -78,6 +77,7 @@ const MIME: Record<string, string> = {
   '.map': 'application/json; charset=utf-8',
 };
 
+// Inline style attributes are allowed (the UI library sets them for layout); inline and evaluated script are not.
 const CSP =
   "default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; " +
   "object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'";
@@ -97,6 +97,8 @@ export class FrontDoor {
   private tokenDigest: Buffer;
   private failures: number[] = [];
   private lockedUntil = 0;
+  private cookieFailures: number[] = [];
+  private cookieLockedUntil = 0;
 
   constructor(opts: FrontDoorOptions) {
     this.opts = opts;
@@ -187,8 +189,14 @@ export class FrontDoor {
       const cookie = parseCookie(req.headers.cookie)[this.cookieName];
       if (!this.tokenMatches(cookie)) {
         if (cookie) {
-          if (this.throttled(now)) throw new HttpError(429, 'throttled', 'Too many failed attempts; try again shortly');
-          this.recordFailure(now);
+          // Counted apart from the start link: a stale tab from before a restart must not lock out the new link.
+          if (now < this.cookieLockedUntil) throw new HttpError(429, 'throttled', 'Too many failed attempts; try again shortly');
+          this.cookieFailures = this.cookieFailures.filter((t) => now - t < FAIL_WINDOW_MS);
+          this.cookieFailures.push(now);
+          if (this.cookieFailures.length >= FAIL_LIMIT) {
+            this.cookieLockedUntil = now + LOCKOUT_MS;
+            this.cookieFailures = [];
+          }
         }
         if (!pathname.startsWith('/api/') && method === 'GET') {
           res.writeHead(401, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -208,6 +216,8 @@ export class FrontDoor {
       }
 
       if (pathname.startsWith('/api/')) {
+        // HEAD would run a handler for its side effects (an export, a stream slot) and discard the answer
+        if (method === 'HEAD') throw new HttpError(405, 'method_not_allowed', 'Method not allowed');
         const found = this.opts.router.match(method, pathname);
         if (!found) throw notFound();
         const body = method === 'POST' ? await readJson(req) : undefined;
@@ -216,7 +226,7 @@ export class FrontDoor {
         if (result !== HANDLED) {
           const payload = JSON.stringify(result ?? null);
           res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
-          res.end(method === 'HEAD' ? undefined : payload);
+          res.end(payload);
         }
         return;
       }
@@ -271,7 +281,7 @@ export class FrontDoor {
     if (!isAsset || !existsSync(file) || !statSync(file).isFile()) {
       if (isAsset) throw notFound();
       file = join(root, 'index.html'); // client-side routes
-      if (!existsSync(file)) {
+      if (!existsSync(file) || !statSync(file).isFile()) {
         res.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8' });
         res.end('The web client has not been built. Run: npm run build');
         return;
@@ -281,7 +291,12 @@ export class FrontDoor {
     const immutable = file.includes(`${sep}assets${sep}`);
     res.writeHead(200, { 'Content-Type': type, 'Cache-Control': immutable ? 'private, max-age=31536000, immutable' : 'no-store' });
     if (head) res.end();
-    else createReadStream(file).pipe(res);
+    else {
+      const stream = createReadStream(file);
+      // a file that vanishes or cannot be read must not take the server down
+      stream.on('error', () => res.destroy());
+      stream.pipe(res);
+    }
   }
 }
 
@@ -299,16 +314,19 @@ function readJson(req: IncomingMessage): Promise<any> {
   return new Promise((resolveBody, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
+    let tooLarge = false;
     req.on('data', (c: Buffer) => {
       size += c.length;
       if (size > MAX_BODY) {
-        reject(new HttpError(413, 'too_large', 'Request body too large'));
-        req.destroy();
+        if (!tooLarge) reject(new HttpError(413, 'too_large', 'Request body too large'));
+        tooLarge = true; // keep draining so the answer can be read; nothing more is kept
+        chunks.length = 0;
         return;
       }
       chunks.push(c);
     });
     req.on('end', () => {
+      if (tooLarge) return;
       if (size === 0) return resolveBody({});
       try {
         const v = JSON.parse(Buffer.concat(chunks).toString('utf8'));

@@ -8,6 +8,8 @@ import { delimiter, isAbsolute, join } from 'node:path';
 import type { Db } from './db.ts';
 import type { Activity } from './activity.ts';
 import { HttpError, badRequest, notFound } from './http.ts';
+import { mask } from './redact.ts';
+import { projectCwd } from './sessions.ts';
 
 /** Never a mode that bypasses permission checks. */
 export const RUN_MODES = ['plan', 'manual', 'acceptEdits', 'auto', 'dontAsk'] as const;
@@ -73,7 +75,8 @@ export class Runs {
   }
 
   list() {
-    return { items: [...this.runs].reverse(), modes: RUN_MODES, maxActive: MAX_ACTIVE, maxPrompt: MAX_PROMPT };
+    // the child's error output can echo anything: it is masked like every other text
+    return { items: [...this.runs].reverse().map((r) => ({ ...r, stderrTail: mask(r.stderrTail) })), modes: RUN_MODES, maxActive: MAX_ACTIVE, maxPrompt: MAX_PROMPT };
   }
 
   private active() {
@@ -82,8 +85,9 @@ export class Runs {
 
   /** Validates everything, then starts the binary directly: no shell, a fixed argument list, the prompt on stdin. */
   launch(body: any): Run {
+    // (the returned run never carries raw child output)
     if (!body || typeof body !== 'object') throw badRequest('The body must be an object');
-    for (const key of Object.keys(body)) if (!FIELDS.has(key)) throw badRequest(`Unknown field: ${key.slice(0, 40)}`);
+    for (const key of Object.keys(body)) if (!FIELDS.has(key)) throw badRequest('The request has a field that is not accepted');
     const { project, prompt, model, permissionMode } = body;
     if (typeof permissionMode !== 'string' || !(RUN_MODES as readonly string[]).includes(permissionMode)) {
       throw badRequest(`permissionMode must be one of: ${RUN_MODES.join(', ')}`);
@@ -92,11 +96,11 @@ export class Runs {
     if (typeof prompt !== 'string' || prompt.length < 1 || prompt.length > MAX_PROMPT) throw badRequest(`prompt must be text of 1 to ${MAX_PROMPT} characters`);
     if (typeof project !== 'string' || !project) throw badRequest('project must be the id of a known project');
     // The working directory comes from the index, never from the request.
-    const known = this.db.prepare('SELECT cwd FROM sessions WHERE project = ? AND cwd IS NOT NULL ORDER BY last_ts DESC LIMIT 1').get(project) as { cwd: string } | undefined;
+    const known = projectCwd(this.db, project);
     if (!known) throw badRequest('project must be the id of a known project');
     let cwd: string;
     try {
-      cwd = realpathSync(known.cwd);
+      cwd = realpathSync(known);
       if (!existsSync(cwd) || !statSync(cwd).isDirectory()) throw new Error('not a directory');
     } catch {
       throw badRequest("The project's directory no longer exists");
@@ -113,6 +117,11 @@ export class Runs {
       id: randomUUID(), sessionId, project, cwd, model: typeof model === 'string' ? model : null, permissionMode, state: 'starting',
       startedAt: this.now(), endedAt: null, exitCode: null, signal: null, stopRequestedAt: null, stderrTail: '', pid: null,
     };
+    // Logged before the child exists: a launch that cannot be recorded does not happen.
+    this.activity.record('run-launch', {
+      run: run.id, session: sessionId, project, model: run.model, mode: permissionMode, promptLength: prompt.length,
+      promptHash: createHash('sha256').update(prompt).digest('hex'),
+    });
     const child = spawn(this.bin, args, { cwd, env, shell: false, stdio: ['pipe', 'ignore', 'pipe'], windowsHide: true });
     run.pid = child.pid ?? null;
     this.runs.push(run);
@@ -146,11 +155,7 @@ export class Runs {
     });
     child.stdin?.on('error', () => undefined);
     child.stdin?.end(prompt);
-    this.activity.record('run-launch', {
-      run: run.id, session: sessionId, project, model: run.model, mode: permissionMode, promptLength: prompt.length,
-      promptHash: createHash('sha256').update(prompt).digest('hex'), pid: run.pid,
-    });
-    return run;
+    return { ...run, stderrTail: '' };
   }
 
   /** Interrupts a child this process started, then kills it if it is still there after 5 seconds. */
@@ -158,7 +163,8 @@ export class Runs {
     const run = this.runs.find((r) => r.id === id);
     if (!run) throw notFound();
     const child = this.children.get(id);
-    if (!child || run.state === 'exited' || run.state === 'failed') return run;
+    const shown = () => ({ ...run, stderrTail: mask(run.stderrTail) });
+    if (!child || run.state === 'exited' || run.state === 'failed') return shown();
     if (run.stopRequestedAt === null) {
       run.stopRequestedAt = this.now();
       child.kill('SIGINT');
@@ -167,12 +173,19 @@ export class Runs {
       this.killTimers.set(id, timer);
       this.activity.record('run-stop', { run: id, session: run.sessionId });
     }
-    return run;
+    return shown();
   }
 
-  /** On shutdown: interrupt whatever is still running. */
-  close() {
-    for (const child of this.children.values()) child.kill('SIGINT');
+  /** On shutdown: interrupt whatever is still running, and kill what has not gone after 3 seconds. */
+  async close() {
     for (const t of this.killTimers.values()) clearTimeout(t);
+    const children = [...this.children.values()];
+    if (children.length === 0) return;
+    for (const child of children) child.kill('SIGINT');
+    const gone = Promise.all(children.map((c) => new Promise<void>((r) => (c.exitCode !== null || c.signalCode !== null ? r() : c.once('exit', () => r())))));
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([gone, new Promise<void>((r) => (timer = setTimeout(r, 3000)))]);
+    clearTimeout(timer);
+    for (const child of children) if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
   }
 }

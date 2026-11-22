@@ -30,6 +30,8 @@ export type AppOptions = {
   control?: boolean;
   claudeBin?: string;
   staticDir?: string;
+  /** Largest transcript line that is read; longer lines are skipped and counted (default 32 MB). */
+  maxLineBytes?: number;
   now?: () => number;
 };
 
@@ -58,10 +60,10 @@ export async function createApp(options: AppOptions): Promise<App> {
   const unlock = lockStateDir(stateDir);
   const db = openDb(stateDir);
   const clock = options.now ?? Date.now;
-  const indexer = new Indexer(db, options.claudeHome, () => loadPrices(options.configFile), clock);
+  const indexer = new Indexer(db, options.claudeHome, () => loadPrices(options.configFile), clock, options.maxLineBytes);
   const now = clock;
   const activity = new Activity(stateDir, now);
-  const timelines = new Timelines(db, options.claudeHome, join(options.claudeHome, 'projects'));
+  const timelines = new Timelines(db, options.claudeHome, join(options.claudeHome, 'projects'), options.maxLineBytes);
   const deps: Deps = { db, indexer, options, now, stateDir, activity, timelines };
   const live = new Live(db, options.claudeHome, now);
   indexer.onChange = (ids) => live.notifyIndex(ids);
@@ -80,7 +82,7 @@ export async function createApp(options: AppOptions): Promise<App> {
       control: options.control === true,
       now: deps.now(),
       index: indexer.getStatus(),
-      prices: { readable: prices.readable, models: [...prices.models.keys()].sort(), source: 'additionalModelCostsCache in the user configuration file' },
+      prices: { readable: indexer.priceSourceReadable, models: [...prices.models.keys()].sort(), source: 'additionalModelCostsCache in the user configuration file' },
       totals,
       facets: facets(db),
     };
@@ -234,7 +236,7 @@ export async function createApp(options: AppOptions): Promise<App> {
     const { settings, plugins, mcpServers } = inventory(db, options.claudeHome, options.configFile);
     return { settings, plugins, mcpServers };
   });
-  router.get('/api/ops/doctor', () => doctor(db, options.claudeHome, options.configFile, indexer.priceTable.readable, now()));
+  router.get('/api/ops/doctor', () => doctor(db, options.claudeHome, options.configFile, indexer.priceSourceReadable, now()));
 
   router.get('/api/ops/records', () => {
     const types = (db.prepare('SELECT type, SUM(n) count FROM type_counts GROUP BY type ORDER BY count DESC').all() as any[]).map((t) => ({
@@ -283,7 +285,7 @@ export async function createApp(options: AppOptions): Promise<App> {
     },
     pollLive: async () => live.poll(),
     close: async () => {
-      runs?.close();
+      await runs?.close();
       live.close();
       await door.close();
       await indexer.pass([]).catch(() => undefined);

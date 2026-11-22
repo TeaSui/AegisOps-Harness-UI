@@ -26,7 +26,7 @@ export function forEachLine(path: string, end: number, maxLine: number, onLine: 
         if (nl === -1) break;
         lineNo++;
         const piece = buf.subarray(start, nl);
-        const line = oversize ? null : carryLen ? Buffer.concat([...carry, piece]) : piece;
+        const line = oversize || carryLen + piece.length > maxLine ? null : carryLen ? Buffer.concat([...carry, piece]) : piece;
         carry = [];
         carryLen = 0;
         oversize = false;

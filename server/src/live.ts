@@ -211,7 +211,7 @@ export class Live {
   open(res: ServerResponse) {
     if (this.streams.size >= MAX_STREAMS) throw new HttpError(429, 'too_many_streams', 'Too many open consoles');
     res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-store', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
-    res.write('retry: 2000\n\nevent: hello\ndata: {}\n\n');
+    res.write('retry: 2000\n\n');
     this.streams.add(res);
     res.on('close', () => this.streams.delete(res));
   }

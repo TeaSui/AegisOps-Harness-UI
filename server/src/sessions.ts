@@ -115,8 +115,11 @@ export function listSessions(db: Db, f: SessionFilter) {
   if (fts && items.length) {
     const wanted = new Map(items.map((s) => [s.id, s]));
     const hits = db
-      .prepare(`SELECT session_id, file_id, line, kind, snippet(search, 0, '${MARK_OPEN}', '${MARK_CLOSE}', '…', 14) AS text FROM search WHERE search MATCH ? LIMIT 20000`)
-      .all(fts) as any[];
+      .prepare(
+        `SELECT session_id, file_id, line, kind, snippet(search, 0, '${MARK_OPEN}', '${MARK_CLOSE}', '…', 14) AS text
+         FROM search WHERE search MATCH ? AND session_id IN (${items.map(() => '?').join(', ')}) LIMIT 5000`,
+      )
+      .all(fts, ...items.map((s) => s.id)) as any[];
     for (const h of hits) {
       const s = wanted.get(h.session_id);
       if (!s) continue;
@@ -174,17 +177,34 @@ export function getSession(db: Db, id: string) {
     links,
     sourceRemoved: files.some((f) => f.missing === 1),
     skippedLines: files.reduce((n, f) => n + f.skipped, 0),
-    resumeCommand: row.hasMain ? `claude --resume ${id}` : null,
+    resumeCommand: resumeCommand(row.hasMain, id, r.cwd),
   };
 }
 
+const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+
+/**
+ * The command that continues a session in a terminal. Both values come from transcripts, so they are
+ * single-quoted for the shell, and an id that is not a plain identifier gets no command at all.
+ */
+export function resumeCommand(hasMain: boolean, id: string, cwd: string | null): string | null {
+  if (!hasMain || !/^[A-Za-z0-9_-]{1,100}$/.test(id)) return null;
+  const resume = `claude --resume ${shellQuote(id)}`;
+  return cwd && cwd.startsWith('/') && !/[\n\r\0]/.test(cwd) ? `cd ${shellQuote(cwd)} && ${resume}` : resume;
+}
+
+/** A project's folder: the working directory whose encoded form is the project id, else the shortest one seen. */
+export function projectCwd(db: Db, project: string): string | null {
+  const cwds = (db.prepare('SELECT DISTINCT cwd FROM sessions WHERE project = ? AND cwd IS NOT NULL').all(project) as Array<{ cwd: string }>).map((r) => r.cwd);
+  if (cwds.length === 0) return null;
+  return cwds.find((c) => c.replace(/[^A-Za-z0-9]/g, '-') === project) ?? cwds.sort((a, b) => a.length - b.length || a.localeCompare(b))[0];
+}
+
 export function projects(db: Db) {
-  return db
-    .prepare(
-      `SELECT project AS id, MAX(cwd) AS cwd, COUNT(*) AS sessions, MAX(last_ts) AS lastTs, COALESCE(SUM(cost), 0) AS cost
-       FROM sessions GROUP BY project ORDER BY lastTs DESC`,
-    )
-    .all();
+  const rows = db
+    .prepare('SELECT project AS id, COUNT(*) AS sessions, MAX(last_ts) AS lastTs, COALESCE(SUM(cost), 0) AS cost FROM sessions GROUP BY project ORDER BY lastTs DESC')
+    .all() as Array<{ id: string; sessions: number; lastTs: number; cost: number }>;
+  return rows.map((r) => ({ ...r, cwd: projectCwd(db, r.id) }));
 }
 
 export function facets(db: Db) {

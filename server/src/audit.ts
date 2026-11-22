@@ -225,9 +225,11 @@ export function integrity(db: Db, claudeHome: string) {
 export function ackIntegrity(db: Db, id: number, body: any, now: number) {
   const note = body?.note ?? '';
   if (typeof note !== 'string' || note.length > 2000) throw badRequest('note must be text of at most 2000 characters');
-  const done = db.prepare('UPDATE integrity_alerts SET ack_at = ?, ack_note = ? WHERE id = ?').run(now, mask(note), id);
-  if (done.changes === 0) throw notFound();
-  return { id, ackAt: now };
+  // the first acknowledgement stands: acknowledging again changes nothing
+  db.prepare('UPDATE integrity_alerts SET ack_at = ?, ack_note = ? WHERE id = ? AND ack_at IS NULL').run(now, mask(note), id);
+  const row = db.prepare('SELECT ack_at FROM integrity_alerts WHERE id = ?').get(id) as { ack_at: number } | undefined;
+  if (!row) throw notFound();
+  return { id, ackAt: row.ack_at };
 }
 
 // ---- exports ----------------------------------------------------------------------------------------
@@ -284,10 +286,16 @@ function stream(res: ServerResponse, name: string, format: 'csv' | 'jsonl', colu
   });
   if (format === 'csv') res.write(columns.map((c) => csvCell(c.header)).join(',') + '\r\n');
   let n = 0;
-  for (const row of rows) {
-    if (format === 'csv') res.write(columns.map((c) => csvCell(c.get(row))).join(',') + '\r\n');
-    else res.write(JSON.stringify(Object.fromEntries(columns.map((c) => [c.key, c.get(row)]))) + '\n');
-    n++;
+  try {
+    for (const row of rows) {
+      if (format === 'csv') res.write(columns.map((c) => csvCell(c.get(row))).join(',') + '\r\n');
+      else res.write(JSON.stringify(Object.fromEntries(columns.map((c) => [c.key, c.get(row)]))) + '\n');
+      n++;
+    }
+  } catch (e) {
+    // a file that stops half-way must not look complete: the connection is cut instead of ended
+    res.destroy();
+    throw e;
   }
   res.end();
   return n;

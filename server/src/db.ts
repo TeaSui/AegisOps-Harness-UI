@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { chmodSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 const DURABLE = `
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -148,11 +148,16 @@ export function openDb(dir: string): Db {
 /** Drops and recreates every derived table. Triage, integrity alerts and re-pricing events are kept. */
 export function rebuild(db: Db) {
   db.exec('BEGIN');
-  for (const t of DERIVED_TABLES) db.exec(`DROP TABLE IF EXISTS ${t}`);
-  db.exec(DERIVED);
-  db.prepare("INSERT INTO meta(key, value) VALUES('schema', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(SCHEMA_VERSION));
-  db.prepare("DELETE FROM meta WHERE key = 'price_hash'").run();
-  db.exec('COMMIT');
+  try {
+    for (const t of DERIVED_TABLES) db.exec(`DROP TABLE IF EXISTS ${t}`);
+    db.exec(DERIVED);
+    db.prepare("INSERT INTO meta(key, value) VALUES('schema', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(String(SCHEMA_VERSION));
+    db.prepare("DELETE FROM meta WHERE key IN ('price_hash', 'price_rates')").run();
+    db.exec('COMMIT');
+  } catch (e) {
+    db.exec('ROLLBACK');
+    throw e;
+  }
 }
 
 export const getMeta = (db: Db, key: string): string | undefined =>

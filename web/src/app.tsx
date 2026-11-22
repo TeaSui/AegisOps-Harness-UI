@@ -44,6 +44,15 @@ function useTheme(): [Theme, () => void] {
   return [theme, () => setTheme((t) => (t === 'system' ? 'light' : t === 'light' ? 'dark' : 'system'))];
 }
 
+/** A malformed % sequence in the address must not blank the page. */
+function safeDecode(part: string): string {
+  try {
+    return decodeURIComponent(part);
+  } catch {
+    return part;
+  }
+}
+
 const typing = (el: EventTarget | null) => el instanceof HTMLElement && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable);
 
 /** j / k / Enter over whatever rows the current view marked with data-row; "/" focuses its filter; "g" then a letter jumps. */
@@ -220,7 +229,7 @@ export function App() {
   let view;
   if (route.path === '/') view = <Now live={live} overview={overview.data} />;
   else if (route.path === '/sessions') view = <Sessions query={route.query} facets={overview.data?.facets} />;
-  else if (route.path.startsWith('/sessions/')) view = <Session id={decodeURIComponent(route.path.slice('/sessions/'.length))} query={route.query} />;
+  else if (route.path.startsWith('/sessions/')) view = <Session id={safeDecode(route.path.slice('/sessions/'.length))} query={route.query} />;
   else if (section === '/audit') view = <Audit tab={route.path.split('/')[2] ?? 'findings'} query={route.query} />;
   else if (section === '/cost') view = <Cost query={route.query} />;
   else if (section === '/ops') view = <Ops tab={route.path.split('/')[2] ?? 'health'} query={route.query} />;

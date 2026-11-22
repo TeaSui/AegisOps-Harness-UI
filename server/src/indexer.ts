@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import type { Db } from './db.ts';
 import { getMeta, setMeta } from './db.ts';
 import { preview } from './redact.ts';
-import { costOf, type PriceTable } from './pricing.ts';
+import { costOf, resolveModel, type PriceTable } from './pricing.ts';
 import { matchRead, matchShell, matchWrite, SEVERITY_RANK, type Finding } from './rules.ts';
 
 const CHUNK = 4 * 1024 * 1024;
@@ -22,7 +22,7 @@ export const KNOWN_TYPES = new Set([
   'file-history-snapshot', 'file-history-delta', 'cost-state', 'artifact-autoreact-ledger', 'artifact-comment-monitor', 'summary', 'custom-title',
 ]);
 
-export type PassStats = { at: number; bytesRead: number; files: number; filesChanged: number; durationMs: number };
+export type PassStats = { at: number; bytesRead: number; files: number; filesChanged: number; failed: number; durationMs: number };
 export type IndexStatus = {
   state: 'idle' | 'indexing';
   files: number;
@@ -81,8 +81,7 @@ export function shapeTool(name: string, input: any): ToolShape {
 
 function compact(input: unknown): string {
   try {
-    const s = JSON.stringify(input) ?? '';
-    return s.length > 1200 ? s.slice(0, 1200) : s;
+    return JSON.stringify(input) ?? ''; // masked, then shortened, where it is stored
   } catch {
     return '';
   }
@@ -115,13 +114,19 @@ export class Indexer {
 
   private now: () => number;
 
-  constructor(db: Db, claudeHome: string, loadPrices: () => PriceTable, now: () => number = Date.now) {
+  private maxLine: number;
+  /** Whether the price table could be read at the last pass (the prices in use may be older, kept ones). */
+  priceSourceReadable = true;
+
+  constructor(db: Db, claudeHome: string, loadPrices: () => PriceTable, now: () => number = Date.now, maxLine = MAX_LINE) {
     this.db = db;
+    this.maxLine = maxLine;
     this.now = now;
     this.claudeHome = claudeHome;
     this.projectsDir = join(claudeHome, 'projects');
     this.loadPrices = loadPrices;
     this.prices = loadPrices();
+    this.priceSourceReadable = this.prices.readable;
     this.prepare();
   }
 
@@ -194,7 +199,7 @@ export class Indexer {
     const out: Discovered[] = [];
     let projects: string[] = [];
     try {
-      projects = readdirSync(this.projectsDir);
+      projects = readdirSync(this.projectsDir).sort();
     } catch {
       return out;
     }
@@ -203,7 +208,7 @@ export class Indexer {
       let entries: string[];
       try {
         if (!lstatSync(dir).isDirectory()) continue;
-        entries = readdirSync(dir);
+        entries = readdirSync(dir).sort(); // a stable order: a response id copied into a fork stays with the first file
       } catch {
         continue;
       }
@@ -243,9 +248,17 @@ export class Indexer {
     const dirty = new Set<string>();
     let bytesRead = 0;
     let filesChanged = 0;
+    let failed = 0;
     try {
       for (const d of targets) {
-        const read = await this.indexFile(d, deep, dirty);
+        let read = 0;
+        try {
+          read = await this.indexFile(d, deep, dirty);
+        } catch {
+          // one unreadable file must not stop the pass, nor the summaries of the files already read
+          failed++;
+          dirty.add(d.sessionId);
+        }
         if (read > 0) filesChanged++;
         bytesRead += read;
         this.status.progress.done++;
@@ -262,49 +275,83 @@ export class Indexer {
         }
         this.deepPending = false;
       }
-      if (dirty.size) this.rollup([...dirty]);
+      if (dirty.size) {
+        this.rollup([...dirty]);
+        this.savePriceState(this.prices);
+      }
     } finally {
       this.status.state = 'idle';
     }
-    const stats = { at: Date.now(), bytesRead, files: targets.length, filesChanged, durationMs: Date.now() - started };
+    const stats = { at: Date.now(), bytesRead, files: targets.length, filesChanged, failed, durationMs: Date.now() - started };
     this.status.lastPass = stats;
     if (dirty.size) this.onChange([...dirty]);
     return stats;
   }
 
-  /** Recomputes stored costs when the harness's price table changed, and records the event. */
+  /**
+   * Recomputes stored costs when the harness's price table changed, and records the event with the
+   * rates before and after for each model whose price changed. An unreadable table changes nothing.
+   */
   private refreshPrices() {
     const next = this.loadPrices();
+    this.priceSourceReadable = next.readable;
+    if (!next.readable && getMeta(this.db, 'price_hash') !== undefined) return; // keep the last good prices
     const stored = getMeta(this.db, 'price_hash');
     this.prices = next;
     if (stored === next.hash) return;
+    const rates = (model: string | null) => {
+      const id = resolveModel(next, model);
+      return id === null ? null : next.models.get(id)!;
+    };
     if (stored !== undefined) {
-      const models = this.db.prepare('SELECT DISTINCT model FROM api_calls').all() as Array<{ model: string | null }>;
-      const changed: string[] = [];
-      this.db.exec('BEGIN');
-      for (const { model } of models) {
-        const unit = costOf(next, model, { input: 1e6, output: 0, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0 });
-        if (unit === null) {
-          this.db.prepare('UPDATE api_calls SET cost = NULL WHERE model IS ?').run(model);
-        } else {
-          const r = { i: 0, o: 0, c: 0, w5: 0, w1: 0 };
-          r.i = unit;
-          r.o = costOf(next, model, { input: 0, output: 1e6, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 0 })!;
-          r.c = costOf(next, model, { input: 0, output: 0, cacheRead: 1e6, cacheWrite5m: 0, cacheWrite1h: 0 })!;
-          r.w5 = costOf(next, model, { input: 0, output: 0, cacheRead: 0, cacheWrite5m: 1e6, cacheWrite1h: 0 })!;
-          r.w1 = costOf(next, model, { input: 0, output: 0, cacheRead: 0, cacheWrite5m: 0, cacheWrite1h: 1e6 })!;
-          this.db
-            .prepare('UPDATE api_calls SET cost = (input * ? + output * ? + cache_read * ? + cache_w5 * ? + cache_w1 * ?) / 1e6 WHERE model IS ?')
-            .run(r.i, r.o, r.c, r.w5, r.w1, model);
-        }
-        if (model) changed.push(model);
+      let before: Record<string, unknown> = {};
+      try {
+        before = JSON.parse(getMeta(this.db, 'price_rates') ?? '{}');
+      } catch {
+        before = {};
       }
-      this.db.prepare('INSERT INTO price_events(at, detail) VALUES(?, ?)').run(this.now(), JSON.stringify({ models: changed.sort(), pricedModels: next.models.size }));
-      this.db.exec('COMMIT');
-      const sessions = (this.db.prepare('SELECT id FROM sessions').all() as Array<{ id: string }>).map((s) => s.id);
-      if (sessions.length) this.rollup(sessions);
+      const models = (this.db.prepare('SELECT DISTINCT model FROM api_calls').all() as Array<{ model: string | null }>).map((m) => m.model);
+      const changes: Array<{ model: string; before: unknown; after: unknown }> = [];
+      this.db.exec('BEGIN');
+      try {
+        for (const model of models) {
+          const r = rates(model);
+          const was = model !== null && Object.hasOwn(before, model) ? before[model] : null;
+          if (JSON.stringify(was) === JSON.stringify(r)) continue;
+          if (model) changes.push({ model, before: was, after: r });
+          if (r === null) this.db.prepare('UPDATE api_calls SET cost = NULL WHERE model IS ?').run(model);
+          else {
+            this.db
+              .prepare('UPDATE api_calls SET cost = (input * ? + output * ? + cache_read * ? + cache_w5 * ? + cache_w1 * ?) / 1e6 WHERE model IS ?')
+              .run(r.input, r.output, r.cacheRead, r.cacheWrite5m, r.cacheWrite1h, model);
+          }
+        }
+        if (changes.length) {
+          changes.sort((a, b) => a.model.localeCompare(b.model));
+          this.db.prepare('INSERT INTO price_events(at, detail) VALUES(?, ?)').run(this.now(), JSON.stringify({ models: changes.map((c) => c.model), changes }));
+        }
+        this.db.exec('COMMIT');
+      } catch (e) {
+        this.db.exec('ROLLBACK');
+        throw e;
+      }
+      if (changes.length) {
+        const sessions = (this.db.prepare('SELECT id FROM sessions').all() as Array<{ id: string }>).map((x) => x.id);
+        if (sessions.length) this.rollup(sessions);
+      }
     }
-    setMeta(this.db, 'price_hash', next.hash);
+    this.savePriceState(next);
+  }
+
+  /** Remembers the rates each indexed model was priced at, so the next change can say what it was before. */
+  private savePriceState(table: PriceTable) {
+    const out: Record<string, unknown> = {};
+    for (const { model } of this.db.prepare('SELECT DISTINCT model FROM api_calls WHERE model IS NOT NULL').all() as Array<{ model: string }>) {
+      const id = resolveModel(table, model);
+      out[model] = id === null ? null : table.models.get(id)!;
+    }
+    setMeta(this.db, 'price_rates', JSON.stringify(out));
+    setMeta(this.db, 'price_hash', table.hash);
   }
 
   private purge(fileId: number) {
@@ -386,7 +433,8 @@ export class Indexer {
               ctx.skipped++;
             } else {
               const piece = buf.subarray(lineStart, nl);
-              this.ingestLine(ctx, carryLen ? Buffer.concat([...carry, piece]) : piece);
+              if (carryLen + piece.length > this.maxLine) ctx.skipped++;
+              else this.ingestLine(ctx, carryLen ? Buffer.concat([...carry, piece]) : piece);
             }
             carry = [];
             carryLen = 0;
@@ -394,7 +442,7 @@ export class Indexer {
             committed = pos + lineStart;
           }
           if (lineStart < n && !oversize) {
-            if (carryLen + (n - lineStart) > MAX_LINE) {
+            if (carryLen + (n - lineStart) > this.maxLine) {
               // Too large to hold: drop what was buffered and skip to the line's end.
               oversize = true;
               carry = [];
@@ -531,7 +579,7 @@ export class Indexer {
         break;
       case 'pr-link':
         if (typeof rec.prUrl === 'string' && /^https?:\/\//.test(rec.prUrl)) {
-          this.st.link.run(fileId, sid, rec.prUrl.slice(0, 500), `${rec.prRepository ?? ''}#${rec.prNumber ?? ''}`.slice(0, 200));
+          this.st.link.run(fileId, sid, preview(rec.prUrl, 500), preview(`${rec.prRepository ?? ''}#${rec.prNumber ?? ''}`, 200));
         }
         break;
       default:
@@ -575,9 +623,10 @@ export class Indexer {
         const cwd = typeof rec.cwd === 'string' ? rec.cwd : row.cwd;
         const target = preview(shape.target, 2000);
         this.st.insertTool.run(block.id, row.id, d.sessionId, d.agentId, ts, block.name.slice(0, 200), shape.category, shape.mcpServer, target, cwd, line, skill);
-        if (target) this.st.search.run(target, d.sessionId, row.id, line, 'tool');
+        // searchable targets are commands, file paths, URLs and patterns; the inputs of other tools are not indexed
+        if (target && ['exec', 'write', 'read', 'fetch'].includes(shape.category)) this.st.search.run(target, d.sessionId, row.id, line, 'tool');
         const op = TOUCH_OP[block.name];
-        if (op && shape.target) this.st.touch.run(row.id, d.sessionId, shape.target.slice(0, 1000), op);
+        if (op && shape.target) this.st.touch.run(row.id, d.sessionId, preview(shape.target, 1000), op);
         let findings: Finding[] = [];
         if (shape.category === 'exec') findings = matchShell(shape.target);
         else if (block.name === 'Read') findings = matchRead(shape.target);
@@ -643,7 +692,8 @@ export class Indexer {
           )
           .get(sid) as any;
         const models = (db.prepare('SELECT model, COUNT(*) n FROM api_calls WHERE session_id = ? AND model IS NOT NULL GROUP BY model ORDER BY n DESC').all(sid) as any[]).map((r) => r.model);
-        const reported = db.prepare('SELECT COUNT(*) runs, SUM(total) total FROM cost_state WHERE session_id = ?').get(sid) as any;
+        // one figure per process run (its start time), whichever of the session's files recorded it
+        const reported = db.prepare('SELECT COUNT(*) runs, SUM(total) total FROM (SELECT MAX(total) total FROM cost_state WHERE session_id = ? GROUP BY start_time)').get(sid) as any;
         const tools = db
           .prepare("SELECT COUNT(*) n, COALESCE(SUM(status = 'error'), 0) errors, COALESCE(SUM(status = 'denied'), 0) denied FROM tool_calls WHERE session_id = ?")
           .get(sid) as any;

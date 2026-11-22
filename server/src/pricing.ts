@@ -20,19 +20,17 @@ export function loadPrices(configFile: string): PriceTable {
   let readable = true;
   try {
     const raw = JSON.parse(readFileSync(configFile, 'utf8'))?.additionalModelCostsCache;
+    if (!raw || typeof raw !== 'object') readable = false; // no price table in the file
     if (raw && typeof raw === 'object') {
       for (const [model, value] of Object.entries(raw as Record<string, Record<string, unknown>>)) {
         const input = num(value?.inputTokens);
         const output = num(value?.outputTokens);
-        if (input === undefined || output === undefined) continue;
-        const cacheWrite5m = num(value.promptCacheWriteTokens) ?? input;
-        models.set(model, {
-          input,
-          output,
-          cacheRead: num(value.promptCacheReadTokens) ?? input,
-          cacheWrite5m,
-          cacheWrite1h: num(value.promptCacheWrite1hTokens) ?? cacheWrite5m,
-        });
+        const cacheRead = num(value?.promptCacheReadTokens);
+        const cacheWrite5m = num(value?.promptCacheWriteTokens);
+        // An entry without every rate is not a price: the model stays unpriced rather than guessed.
+        // The one allowed fallback is the 1-hour cache-write rate, which defaults to the 5-minute rate.
+        if (input === undefined || output === undefined || cacheRead === undefined || cacheWrite5m === undefined) continue;
+        models.set(model, { input, output, cacheRead, cacheWrite5m, cacheWrite1h: num(value.promptCacheWrite1hTokens) ?? cacheWrite5m });
       }
     }
   } catch {

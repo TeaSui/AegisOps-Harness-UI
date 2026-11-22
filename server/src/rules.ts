@@ -5,6 +5,7 @@
 //
 // Every matcher is linear in the input and runs on at most RULE_LIMIT characters.
 import { tmpdir } from 'node:os';
+import { posix } from 'node:path';
 
 export const RULE_LIMIT = 64 * 1024;
 
@@ -84,6 +85,10 @@ function parse(command: string): Pipeline[] {
       endPipeline(i);
       i++;
       stageStart = pipeStart = i + 1;
+    } else if (ch === '&' && command[i + 1] !== '>' && command[i - 1] !== '>' && command[i - 1] !== '<') {
+      // a single & puts the command in the background; what follows is another command
+      endPipeline(i);
+      stageStart = pipeStart = i + 1;
     } else if (ch === '|' && command[i + 1] === '|') {
       endPipeline(i);
       i++;
@@ -100,33 +105,76 @@ function parse(command: string): Pipeline[] {
   return out;
 }
 
-const HEREDOC = /(?<!<)<<(?!<)-?[ \t]{0,4}(['"]?)([A-Za-z_][A-Za-z0-9_]{0,40})\1/;
+const HEREDOC = /(?<!<)<<(?!<)-?[ \t]{0,4}(?:'([A-Za-z_][A-Za-z0-9_]{0,40})'|"([A-Za-z_][A-Za-z0-9_]{0,40})"|([A-Za-z_][A-Za-z0-9_]{0,40}))/;
+const PIPED_TO_SHELL = /\|\s{0,4}(?:sudo\s{1,4})?(?:ba|z|da|k)?sh\b/;
+
+type QuoteState = { single: boolean; double: boolean; arith: number };
+
+/** Advances the quote and $(( )) state over a piece of command text. Linear. */
+function scanQuotes(text: string, st: QuoteState): QuoteState {
+  let { single, double, arith } = st;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (single) {
+      if (ch === "'") single = false;
+    } else if (ch === '\\') i++;
+    else if (double) {
+      if (ch === '"') double = false;
+    } else if (ch === "'") single = true;
+    else if (ch === '"') double = true;
+    else if (ch === '(' && text[i + 1] === '(') {
+      arith++;
+      i++;
+    } else if (ch === ')' && text[i + 1] === ')' && arith > 0) {
+      arith--;
+      i++;
+    }
+  }
+  return { single, double, arith };
+}
 
 /**
  * Takes here-document bodies out of a command. A body is text handed to a program, not commands:
  * writing a file whose content mentions `rm -rf /` runs nothing. The exceptions are kept: a body fed
- * to a shell is commands, and a body fed to a database client is statements.
+ * to a shell (directly or through a pipe) is commands, and a body fed to a database client is
+ * statements. A `<<` with no closing line is not treated as a here-document, so nothing is dropped.
  */
 function splitHeredocs(command: string): { shell: string; sql: string } {
   if (!command.includes('<<')) return { shell: command, sql: command };
   const lines = command.split('\n');
   const shell: string[] = [];
   const sql: string[] = [];
+  // Quotes can open on one line and close on a later one (a commit message), so the state is carried along.
+  let state: QuoteState = { single: false, double: false, arith: 0 };
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     shell.push(line);
     sql.push(line);
     const m = HEREDOC.exec(line);
-    if (!m) continue;
+    const at = m ? scanQuotes(line.slice(0, m.index), state) : null;
+    state = scanQuotes(line + '\n', state);
+    // `<<` is an operator only outside quotes and outside $(( )), where it is a shift
+    if (!m || !at || at.single || at.double || at.arith > 0) continue;
+    const delimiter = m[1] ?? m[2] ?? m[3];
+    let end = -1;
+    for (let j = i + 1; j < lines.length; j++) {
+      if (lines[j].trim() === delimiter) {
+        end = j;
+        break;
+      }
+    }
+    if (end === -1) continue;
     const before = line.slice(0, m.index);
+    const after = line.slice(m.index + m[0].length);
     const stage = before.slice(Math.max(before.lastIndexOf('|'), before.lastIndexOf(';'), before.lastIndexOf('&')) + 1);
     const verb = verbOf({ text: stage, words: stage.trim().split(/\s+/).slice(0, 40) }).verb;
-    const toShell = SHELLS.has(verb);
-    const toSql = DB_CLIENT.test(stage);
-    for (i++; i < lines.length && lines[i].trim() !== m[2]; i++) {
-      if (toShell) shell.push(lines[i]);
-      if (toSql) sql.push(lines[i]);
+    const toShell = SHELLS.has(verb) || PIPED_TO_SHELL.test(after);
+    const toSql = DB_CLIENT.test(stage) || DB_CLIENT.test(after);
+    for (let j = i + 1; j < end; j++) {
+      if (toShell) shell.push(lines[j]);
+      if (toSql) sql.push(lines[j]);
     }
+    i = end;
   }
   return { shell: shell.join('\n'), sql: sql.join('\n') };
 }
@@ -140,6 +188,7 @@ function verbOf(stage: Stage): { verb: string; args: string[]; sudo: boolean } {
     const word = w[i].replace(/^[({]+/, '');
     if (word === 'sudo' || word === 'doas') sudo = true;
     if (WRAPPERS.has(word) || word === '' || /^[A-Za-z_][A-Za-z0-9_]*=/.test(word)) i++;
+    else if (sudo && /^-[ughpUCDRT]$/.test(word)) i += 2; // sudo -u root: the option takes a value
     else if (sudo && /^-/.test(word)) i++;
     else break;
   }
@@ -284,8 +333,17 @@ export function matchShell(commandRaw: string, depth = 0): Finding[] {
   const add = (ruleId: string, evidence: string, severity?: Severity) => {
     const sev = severity ?? RULE_BY_ID.get(ruleId)!.severity;
     const prev = found.get(ruleId);
-    if (!prev || SEVERITY_RANK[sev] > SEVERITY_RANK[prev.severity]) found.set(ruleId, { ruleId, severity: sev, evidence: evidence.slice(0, 600) });
+    if (!prev || SEVERITY_RANK[sev] > SEVERITY_RANK[prev.severity]) found.set(ruleId, { ruleId, severity: sev, evidence: evidence.slice(0, 8000) });
   };
+
+  // $(...) and backticks run a command wherever they appear
+  if (depth < 2) {
+    let seen = 0;
+    for (const m of command.matchAll(/\$\(([^()]{1,2000})\)|`([^`]{1,2000})`/g)) {
+      if (++seen > 20) break;
+      for (const f of matchShell(m[1] ?? m[2], depth + 1)) add(f.ruleId, f.evidence, f.severity);
+    }
+  }
 
   for (const pipeline of parse(command)) {
     let downloaderSeen = false;
@@ -293,6 +351,11 @@ export function matchShell(commandRaw: string, depth = 0): Finding[] {
       const { verb, args, sudo } = verbOf(stage);
       const text = stage.text;
       if (sudo) add('priv.sudo', text);
+      // xargs runs its arguments as a command
+      if (verb === 'xargs' && depth < 2) {
+        const first = args.findIndex((a, i) => !isFlag(a) && !/^-[IiLnPsEd]$/.test(args[i - 1] ?? ''));
+        if (first !== -1) for (const f of matchShell(args.slice(first).join(' '), depth + 1)) add(f.ruleId, text, f.severity);
+      }
       // sh -c "<command>": the quoted argument is itself a command
       if (SHELLS.has(verb) && depth < 2) {
         const c = args.indexOf('-c');
@@ -357,11 +420,13 @@ export function matchShell(commandRaw: string, depth = 0): Finding[] {
         if (!LOCAL_HOST.test(text)) {
           const uploads = args.some((a, i) => {
             const value = /^(?:-d|--data|--data-binary|--data-raw|--data-urlencode|-F|--form)$/.test(a) ? unquote(args[i + 1] ?? '') : /^--(?:data|data-binary|form)=/.test(a) ? unquote(a.slice(a.indexOf('=') + 1)) : '';
-            return value.startsWith('@') || /^[A-Za-z0-9_]+=@/.test(value) || /^[A-Za-z0-9_]+=<[^<]/.test(value);
+            return value.startsWith('@') || value.startsWith('$(') || value.startsWith('`') || /^[A-Za-z0-9_]+=@/.test(value) || /^[A-Za-z0-9_]+=<[^<]/.test(value);
           });
           if (uploads || args.some((a) => a === '-T' || a === '--upload-file')) add('net.exfil', pipeline.text);
         }
       }
+      if (verb === 'wget' && !LOCAL_HOST.test(text) && args.some((a) => /^--(?:post|body)-file\b/.test(a))) add('net.exfil', pipeline.text);
+      if ((verb === 'http' || verb === 'https') && !LOCAL_HOST.test(text) && args.some((a) => /^[A-Za-z0-9_-]+@./.test(a) || a === '<')) add('net.exfil', pipeline.text);
       if ((verb === 'nc' || verb === 'ncat' || verb === 'netcat') && index > 0 && !/\b(?:localhost|127\.0\.0\.1)\b/.test(text)) add('net.exfil', pipeline.text);
     });
 
@@ -385,17 +450,19 @@ export function matchShell(commandRaw: string, depth = 0): Finding[] {
 const TEMP_ROOTS = ['/tmp/', '/private/tmp/', '/var/folders/', '/private/var/folders/', '/var/tmp/', tmpdir().replace(/\/?$/, '/')];
 
 /** A file tool wrote to an absolute path outside the project, temp directories and the Claude home's own work areas. */
-export function matchWrite(path: string, ctx: RuleContext): Finding[] {
-  if (!path.startsWith('/') || !ctx.cwd) return [];
+export function matchWrite(rawPath: string, ctx: RuleContext): Finding[] {
+  if (!rawPath.startsWith('/') || !ctx.cwd) return [];
+  // /project/../etc/passwd is not inside the project
+  const path = posix.normalize(rawPath.length > 4096 ? rawPath.slice(0, 4096) : rawPath);
   const under = (root: string) => path === root || path.startsWith(root.replace(/\/?$/, '/'));
   if (under(ctx.cwd)) return [];
   // Inside the Claude home only the plan and per-project work areas are expected; settings are not.
   const inHome = under(ctx.claudeHome);
   if (inHome && (under(`${ctx.claudeHome}/plans`) || under(`${ctx.claudeHome}/projects`))) return [];
   if (!inHome && TEMP_ROOTS.some((r) => path.startsWith(r))) return [];
-  return [{ ruleId: 'fs.write-outside-project', severity: 'medium', evidence: path.slice(0, 600) }];
+  return [{ ruleId: 'fs.write-outside-project', severity: 'medium', evidence: rawPath.slice(0, 8000) }];
 }
 
 export function matchRead(path: string): Finding[] {
-  return isCredentialPath(path) ? [{ ruleId: 'secret.credential-read', severity: 'high', evidence: path.slice(0, 600) }] : [];
+  return isCredentialPath(path) ? [{ ruleId: 'secret.credential-read', severity: 'high', evidence: path.slice(0, 8000) }] : [];
 }

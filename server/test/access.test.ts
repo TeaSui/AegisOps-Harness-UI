@@ -114,11 +114,25 @@ test('AEGIS-34 no CORS, and the security headers are on every response', () =>
 test('AEGIS-34 repeated failed token attempts are throttled', () =>
   withServer(async (c) => {
     for (let i = 0; i < 10; i++) assert.equal((await fetch(`${c.origin}/?token=guess${i}`, { redirect: 'manual' })).status, 401);
-    // locked: even the right token is refused for the lockout period, and a wrong cookie too
+    // locked: even the right token is refused for the lockout period
     assert.equal((await fetch(`${c.origin}/?token=${c.app.token}`, { redirect: 'manual' })).status, 429);
-    assert.equal((await fetch(`${c.origin}/api/sessions`, { headers: { cookie: `aegis_${c.app.port}=wrong` } })).status, 429);
     // an established session is not locked out by someone else's guessing
     assert.equal((await c.getRes('/api/sessions')).status, 200);
+  }));
+
+test('AEGIS-34 wrong cookies are throttled on their own and never lock the start link', () =>
+  withServer(async (c) => {
+    const stale = () => fetch(`${c.origin}/api/sessions`, { headers: { cookie: `aegis_${c.app.port}=from-before-a-restart` } });
+    for (let i = 0; i < 10; i++) assert.equal((await stale()).status, 401);
+    assert.equal((await stale()).status, 429);
+    // a stale tab hammering the server does not stop the new link from working, nor a good session
+    assert.equal((await fetch(`${c.origin}/?token=${c.app.token}`, { redirect: 'manual' })).status, 302);
+    assert.equal((await c.getRes('/api/sessions')).status, 200);
+    // HEAD is not routed to API handlers: it would run an export or take a stream slot for nothing
+    assert.equal((await c.getRes('/api/sessions', { method: 'HEAD' })).status, 405);
+    assert.equal((await c.getRes('/api/events', { method: 'HEAD' })).status, 405);
+    assert.equal((await c.getRes('/api/audit/ledger/export', { method: 'HEAD' })).status, 405);
+    assert.deepEqual((await c.get('/api/audit/activity')).items, []);
   }));
 
 test('AEGIS-34 the listener is on loopback only and a taken port fails the start', () =>

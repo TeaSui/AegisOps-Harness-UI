@@ -25,7 +25,9 @@ function parseArgs(argv: string[]) {
     const a = argv[i];
     if (a === '-h' || a === '--help') out.help = true;
     else if (a.startsWith('--')) {
-      const [name, inline] = a.slice(2).split('=', 2);
+      const eq = a.indexOf('=');
+      const name = eq === -1 ? a.slice(2) : a.slice(2, eq);
+      const inline = eq === -1 ? undefined : a.slice(eq + 1);
       if (takesValue.has(name)) {
         const value = inline ?? argv[++i];
         if (value === undefined) throw new Error(`--${name} needs a value`);
@@ -76,9 +78,12 @@ async function main() {
   console.log(`\n  Open  ${app.url}\n`);
   console.log('  The link carries a one-time access token. Indexing the Claude home has started; the console shows progress.\n');
   const started = Date.now();
-  void app.index({ deep: args.verify === true }).then(() => {
-    if (process.env.AEGIS_LOG === '1') console.log(`first index pass finished in ${Date.now() - started} ms`);
-  });
+  app.index({ deep: args.verify === true }).then(
+    () => {
+      if (process.env.AEGIS_LOG === '1') console.log(`first index pass finished in ${Date.now() - started} ms`);
+    },
+    (e: NodeJS.ErrnoException) => console.error(`The first index pass failed (${e?.name ?? 'Error'} ${e?.code ?? ''}). The console is up; indexing is retried every 15 seconds.`),
+  );
   let closing = false;
   const stop = () => {
     if (closing) process.exit(1);

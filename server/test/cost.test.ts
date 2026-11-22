@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { writeFileSync } from 'node:fs';
 import { Home, PRICES, rec, start, type Client } from './fixture.ts';
 
 const at = (iso: string) => Date.parse(iso);
@@ -127,7 +128,7 @@ test('AEGIS-4 a changed price table re-prices stored costs and records the event
     near((await c.get('/api/sessions/A')).cost.estimated, 6.137);
     assert.deepEqual((await c.get(`/api/cost/series?${RANGE}`)).repricing, []);
     home.config({
-      additionalModelCostsCache: { ...PRICES, 'm-cheap': { ...PRICES['m-cheap'], inputTokens: 2 }, 'mystery-9': { inputTokens: 100, outputTokens: 100 } },
+      additionalModelCostsCache: { ...PRICES, 'm-cheap': { ...PRICES['m-cheap'], inputTokens: 2 }, 'mystery-9': { inputTokens: 100, outputTokens: 100, promptCacheReadTokens: 10, promptCacheWriteTokens: 125 } },
     });
     await c.app.index();
     // a2 doubles to 2.0; a3 is now priced: 50 x 100 / 1e6 = 0.005
@@ -138,7 +139,11 @@ test('AEGIS-4 a changed price table re-prices stored costs and records the event
     near(series.totals.cost, 7.192);
     assert.equal(series.repricing.length, 1);
     assert.equal(series.repricing[0].at, at('2026-11-22T00:00:00Z'));
-    assert.deepEqual(series.repricing[0].models, ['m-cheap', 'm-priced', 'mystery-9']);
+    // LOG-01: only the models whose price changed, with the rates before and after
+    assert.deepEqual(series.repricing[0].models, ['m-cheap', 'mystery-9']);
+    const [cheap, mystery] = series.repricing[0].changes;
+    assert.deepEqual({ model: cheap.model, before: cheap.before.input, after: cheap.after.input }, { model: 'm-cheap', before: 1, after: 2 });
+    assert.deepEqual({ model: mystery.model, before: mystery.before, after: mystery.after.input }, { model: 'mystery-9', before: null, after: 100 });
     // an unchanged table is not an event
     await c.app.index();
     assert.equal((await c.get(`/api/cost/series?${RANGE}`)).repricing.length, 1);
@@ -149,4 +154,37 @@ test('AEGIS-4 a changed price table re-prices stored costs and records the event
     near(after.cost.estimated, 0.137);
     assert.equal(after.cost.unpricedCalls, 3);
     assert.equal((await c.get('/api/overview')).prices.models.length, 1);
+    const events = (await c.get(`/api/cost/series?${RANGE}`)).repricing.length;
+    // a table that cannot be read changes nothing: the last good prices stand and no event is written
+    writeFileSync(home.configFile, '{ not json');
+    await c.app.index();
+    near((await c.get('/api/sessions/A')).cost.estimated, 0.137);
+    assert.equal((await c.get(`/api/cost/series?${RANGE}`)).repricing.length, events);
+    // an entry without its cache rates is not a price
+    home.config({ additionalModelCostsCache: { 'm-priced': { inputTokens: 10, outputTokens: 50 } } });
+    await c.app.index();
+    assert.equal((await c.get('/api/sessions/A')).cost.unpricedCalls, 4);
   }));
+
+test('AEGIS-24 a group named like an object property cannot corrupt the totals', async () => {
+  const home = new Home();
+  const b = { sid: 'p', at: at('2026-11-20T10:00:00Z') };
+  home.transcript('-work-alpha', 'p', [
+    rec.assistant(b, { id: 'x1', model: '__proto__', usage: { input: 5 } }),
+    rec.assistant(b, { id: 'x2', model: 'constructor', usage: { input: 7 }, extra: { attributionSkill: '__proto__', attributionPlugin: 'toString' } }),
+  ]);
+  const c = await start(home, { now: () => at('2026-11-22T00:00:00Z') });
+  try {
+    for (const group of ['model', 'skill', 'plugin']) {
+      const s = await c.get(`/api/cost/series?${RANGE}&group=${group}&tz=0`);
+      assert.equal(s.totals.calls, 2);
+      assert.equal(s.totals.input, 12);
+      assert.equal(s.groups.reduce((n: number, g: any) => n + g.calls, 0), 2);
+    }
+    assert.equal(({} as any).cost, undefined);
+    assert.equal(({} as any).calls, undefined);
+  } finally {
+    await c.close();
+    home.destroy();
+  }
+});

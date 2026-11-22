@@ -204,6 +204,103 @@ test('AEGIS-23 secrets are masked everywhere; one record can be revealed and the
     assert.ok(!JSON.stringify(activity).includes(SECRETS.password));
   }));
 
+test('AEGIS-23 credential shapes: short, spaced, flagged, deeply nested and cut-off secrets are all masked', async () => {
+  const home = new (await import('./fixture.ts')).Home();
+  const { rec } = await import('./fixture.ts');
+  const b = { sid: 'm', at: T0 };
+  const secrets = ['abcdefgh', 'hunter', 'ab,cdefgh12', 'abc;defg1234', 'correct horse battery staple', 'my long pass phrase here', 'Sup3rSecret', 'Hunter2Pass', 'p%40ss/word', 'tinypw', 'lQIVBGZ1PGPKEYBODY', '987654321', 'ghp_deep' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4o5'];
+  let nested: any = { k: secrets[12] };
+  for (let i = 0; i < 70; i++) nested = { level: nested };
+  const token = 'ghp_' + 'Z9y8X7w6V5u4T3s2R1q0P9o8N7m6L5k4J3i2';
+  home.transcript('-work-alpha', 'm', [
+    rec.prompt(b, [
+      '{"token":"abcdefgh"}', '--secret hunter', 'password=ab,cdefgh12', 'PASSWORD=abc;defg1234', 'password: correct horse battery staple',
+      "passphrase='my long pass phrase here'", 'curl -u admin:Sup3rSecret https://x.example', 'mysql -u root -pHunter2Pass db', 'postgres://u:p%40ss/word@db.example/app',
+      'db_pwd=tinypw', '-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQIVBGZ1PGPKEYBODY\n-----END PGP PRIVATE KEY BLOCK-----',
+      // not secrets: a count under a token name, and a word that merely starts like "password"
+      'max_tokens=4096 and input_tokens: 862', 'passed: true', 'Authorization: Bearer abcdefghijklmnop1234',
+    ].join('\n')),
+    rec.assistant(b, {
+      id: 'm1',
+      content: [
+        rec.toolUse('deep', 'mcp__x__call', { nested, password: 987654321, max_tokens: 4096 }),
+        // the secret sits just past where the evidence is cut
+        rec.toolUse('cut', 'Bash', { command: `git push --force origin ${'x'.repeat(575)} ${token}` }),
+      ],
+    }),
+  ]);
+  const c = await start(home);
+  try {
+    const t = await c.get('/api/sessions/m/timeline');
+    const all = [JSON.stringify(t), JSON.stringify(await c.get('/api/audit/findings')), JSON.stringify(await c.get('/api/audit/ledger')), JSON.stringify(await c.get(`/api/records/${t.file}/1`)), JSON.stringify(await c.get(`/api/records/${t.file}/2`)), await (await c.getRes('/api/audit/findings/export?format=csv')).text(), await (await c.getRes('/api/audit/ledger/export?format=jsonl')).text()];
+    for (const name of readdirSync(home.stateDir)) all.push(readFileSync(join(home.stateDir, name)).toString('latin1'));
+    const text = all.join('\n');
+    for (const s of secrets) assert.ok(!text.includes(s), `leaked: ${s}`);
+    for (let n = 8; n <= token.length; n++) assert.ok(!text.includes(token.slice(0, n)), `a ${n}-character prefix of the cut token leaked`);
+    const prompt = t.items.find((i: any) => i.kind === 'prompt').text;
+    assert.match(prompt, /max_tokens=4096 and input_tokens: 862/);
+    assert.match(prompt, /passed: true/);
+    assert.match(prompt, /Authorization: Bearer \[masked:auth\]/);
+    assert.match(prompt, /\[masked:private-key\]/);
+    const record = JSON.parse((await c.get(`/api/records/${t.file}/2`)).text);
+    assert.equal(record.message.content[0].input.max_tokens, 4096);
+    assert.equal(record.message.content[0].input.password, '[masked:value]');
+    assert.equal(record.message.usage.input_tokens, 0); // usage numbers stay readable
+    assert.equal((await c.get('/api/audit/findings')).items.find((f: any) => f.toolCall === 'cut').rule, 'git.force-push');
+  } finally {
+    await c.close();
+    home.destroy();
+  }
+});
+
+test('AEGIS-13 long text is cut with a flag, a result with no call is ignored, and counts are per call', async () => {
+  const { Home, rec, lines: toLines } = await import('./fixture.ts');
+  const home = new Home();
+  const b = { sid: 'L', cwd: "/work/it's $(here)", at: T0 };
+  const big = 'word '.repeat(60_000); // 300,000 characters
+  home.transcript('-work-alpha', 'L', [
+    rec.prompt(b, 'p'.repeat(5000)),
+    rec.toolResult(b, 'orphan'),
+    rec.assistant(b, { id: 'l1', content: [rec.toolUse('f1', 'Read', { file_path: '/a.ts' }), rec.toolUse('f2', 'Read', { file_path: '/a.ts' }), rec.toolUse('f3', 'Edit', { file_path: '/a.ts', old_string: 'a', new_string: 'b' })] }),
+    rec.toolResult(b, 'f1', { content: big }),
+  ]);
+  // a forked session copies history: the same response id in a second file is not counted again
+  home.transcript('-work-alpha', 'Lfork', [rec.assistant({ sid: 'Lfork', at: T0 + 5 }, { id: 'l1', usage: { input: 999 } }), rec.assistant({ sid: 'Lfork', at: T0 + 6 }, { id: 'l2', usage: { input: 3 } })]);
+  // a line over the limit is skipped and counted, and the lines after it are still read
+  home.transcript('-work-alpha', 'O', [rec.prompt({ sid: 'O', at: T0 }, 'x'.repeat(800_000)), rec.assistant({ sid: 'O', at: T0 }, { id: 'l9', usage: { input: 11 } })]);
+  void toLines;
+  const c = await start(home, { maxLineBytes: 700_000 });
+  try {
+    const t = await c.get('/api/sessions/L/timeline');
+    const prompt = t.items.find((i: any) => i.kind === 'prompt');
+    assert.equal(prompt.text.length, 4000);
+    assert.equal(prompt.truncated, true);
+    assert.deepEqual(t.items.filter((i: any) => i.kind === 'tool').map((i: any) => i.id), ['f1', 'f2', 'f3']);
+    const f1 = t.items.find((i: any) => i.id === 'f1');
+    assert.equal(f1.result.text.length, 4000);
+    assert.equal(f1.result.truncated, true);
+    assert.deepEqual(t.items.map((i: any) => i.seq), t.items.map((_: any, i: number) => i));
+    const raw = await c.get(`/api/records/${t.file}/${f1.result.line}`);
+    // each field of a raw record is masked on its first 64 KB and the rest is not shown
+    assert.match(raw.text, /more characters not shown/);
+    assert.ok(raw.text.length <= 256 * 1024);
+    assert.deepEqual((await c.get('/api/sessions/L/files')).items, [{ path: '/a.ts', read: 2, edit: 1, write: 0 }]);
+    assert.equal((await c.get('/api/ops/records')).skippedLines, 1);
+    const s = await c.get('/api/sessions/L');
+    assert.equal(s.apiCalls, 1);
+    const o = await c.get('/api/sessions/O');
+    assert.deepEqual([o.usage.input, o.prompts], [11, 0]);
+    assert.deepEqual((await c.get('/api/sessions/O/timeline')).items.map((i: any) => i.kind), ['reply']); // the skipped prompt is not on the tape either
+    assert.equal((await c.get('/api/sessions/Lfork')).usage.input, 3);
+    // both values are single-quoted for the shell; an id that is not a plain identifier gets no command
+    assert.equal(s.resumeCommand, "cd '/work/it'\\''s $(here)' && claude --resume 'L'");
+    assert.equal((await c.get('/api/ops/doctor')).checks.find((x: any) => x.id === 'index.skipped').status, 'warn');
+  } finally {
+    await c.close();
+    home.destroy();
+  }
+});
+
 test('AEGIS-15 record selectors outside the index are refused', () =>
   withRich(async (c, home) => {
     const t = await c.get('/api/sessions/rich/timeline');

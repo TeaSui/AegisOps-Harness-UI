@@ -61,7 +61,8 @@ export function costSeries(db: Db, range: ReturnType<typeof resolveRange>, group
        WHERE c.ts >= ? AND c.ts <= ? GROUP BY 1, 2`,
     )
     .all(shift, shift, range.from, range.to) as any[];
-  const byStart = new Map<number, { total: Sum; groups: Record<string, Sum> }>(range.starts.map((s) => [s, { total: zero(), groups: {} }]));
+  // Group keys come from transcripts (a model could be named __proto__): keyed objects have no prototype.
+  const byStart = new Map<number, { total: Sum; groups: Record<string, Sum> }>(range.starts.map((s) => [s, { total: zero(), groups: Object.create(null) }]));
   const groups = new Map<string, Sum>();
   const totals = zero();
   for (const r of rows) {
@@ -75,12 +76,15 @@ export function costSeries(db: Db, range: ReturnType<typeof resolveRange>, group
   }
   const repricing = (db.prepare('SELECT at, detail FROM price_events ORDER BY at DESC, id DESC LIMIT 50').all() as any[]).map((e) => {
     let models: string[] = [];
+    let changes: unknown[] = [];
     try {
-      models = JSON.parse(e.detail).models ?? [];
+      const d = JSON.parse(e.detail);
+      models = d.models ?? [];
+      changes = d.changes ?? [];
     } catch {
       /* keep empty */
     }
-    return { at: e.at, models };
+    return { at: e.at, models, changes };
   });
   return {
     bucket: range.bucket,
