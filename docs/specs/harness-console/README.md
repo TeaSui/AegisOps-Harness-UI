@@ -1,5 +1,5 @@
 ---
-status: verified
+status: reviewed
 key: AEGIS
 branch: feat/harness-console
 security: required
