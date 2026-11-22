@@ -10,3 +10,4 @@ Append-only, written by `aidlc` only.
 - 2026-11-22T11:20:45Z task-done T3 exit=0 fingerprint=34a48e67a264118e26864b8e12859dfdeae0cdeadaa45b7012b017a12915070c cmd="node --test server/test/sessions.test.ts"
 - 2026-11-22T11:24:25Z task-done T4 exit=0 fingerprint=c073b9d5299063a18388d337e1ba50a30f43c5031405da5c441bb29581a23465 cmd="node --test server/test/audit.test.ts"
 - 2026-11-22T11:28:52Z task-done T5 exit=0 fingerprint=608a09d3368478db52b3a0ca2ebe19e024eb966907cf263bfa7d825a496f16c3 cmd="node --test server/test/live.test.ts"
+- 2026-11-22T11:30:26Z task-done T6 exit=0 fingerprint=6a6350aff7ec2162ba827ece3cf5ef682eeebef11ed019dc3db87c0d1305e9d2 cmd="node --test server/test/cost.test.ts"

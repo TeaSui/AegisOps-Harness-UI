@@ -113,8 +113,11 @@ export class Indexer {
   private deepPending = true;
   onChange: (sessionIds: string[]) => void = () => {};
 
-  constructor(db: Db, claudeHome: string, loadPrices: () => PriceTable) {
+  private now: () => number;
+
+  constructor(db: Db, claudeHome: string, loadPrices: () => PriceTable, now: () => number = Date.now) {
     this.db = db;
+    this.now = now;
     this.claudeHome = claudeHome;
     this.projectsDir = join(claudeHome, 'projects');
     this.loadPrices = loadPrices;
@@ -296,7 +299,7 @@ export class Indexer {
         }
         if (model) changed.push(model);
       }
-      this.db.prepare('INSERT INTO price_events(at, detail) VALUES(?, ?)').run(Date.now(), JSON.stringify({ models: changed.sort(), pricedModels: next.models.size }));
+      this.db.prepare('INSERT INTO price_events(at, detail) VALUES(?, ?)').run(this.now(), JSON.stringify({ models: changed.sort(), pricedModels: next.models.size }));
       this.db.exec('COMMIT');
       const sessions = (this.db.prepare('SELECT id FROM sessions').all() as Array<{ id: string }>).map((s) => s.id);
       if (sessions.length) this.rollup(sessions);
@@ -339,7 +342,7 @@ export class Indexer {
       else if (row.offset > 0 && tailHash(fd, row.offset) !== row.tail_hash) reason = 'rewritten';
       else if (deep !== 'none' && row.deep_offset > 0 && hashRange(fd, 0, row.deep_offset) !== row.deep_hash) reason = 'rewritten';
       if (reason) {
-        this.st.alert.run(d.path, d.sessionId, Date.now(), reason, row.offset, size);
+        this.st.alert.run(d.path, d.sessionId, this.now(), reason, row.offset, size);
         this.db.exec('BEGIN');
         this.purge(row.id);
         this.db.exec('COMMIT');

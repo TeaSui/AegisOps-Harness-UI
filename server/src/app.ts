@@ -11,6 +11,7 @@ import { Activity } from './activity.ts';
 import { LEDGER_CATEGORIES, OUTCOMES, ackIntegrity, exportFindings, exportLedger, findings, integrity, ledger, triage, type FindingFilter, type LedgerFilter } from './audit.ts';
 import { rebuild } from './db.ts';
 import { Live } from './live.ts';
+import { GROUPS, costSeries, resolveRange, topSessions } from './cost.ts';
 import { HANDLED } from './http.ts';
 import { intParam, notFound } from './http.ts';
 
@@ -52,8 +53,9 @@ export async function createApp(options: AppOptions): Promise<App> {
   const stateDir = prepareStateDir(options.stateDir, options.claudeHome);
   const unlock = lockStateDir(stateDir);
   const db = openDb(stateDir);
-  const indexer = new Indexer(db, options.claudeHome, () => loadPrices(options.configFile));
-  const now = options.now ?? Date.now;
+  const clock = options.now ?? Date.now;
+  const indexer = new Indexer(db, options.claudeHome, () => loadPrices(options.configFile), clock);
+  const now = clock;
   const activity = new Activity(stateDir, now);
   const timelines = new Timelines(db, options.claudeHome, join(options.claudeHome, 'projects'));
   const deps: Deps = { db, indexer, options, now, stateDir, activity, timelines };
@@ -203,6 +205,15 @@ export async function createApp(options: AppOptions): Promise<App> {
   router.post('/api/audit/verify', async () => {
     const stats = await indexer.pass(undefined, { deep: true });
     return { files: stats.files, at: stats.at };
+  });
+
+  const rangeOf = (query: URLSearchParams) =>
+    resolveRange(optIntParam(query, 'from'), optIntParam(query, 'to'), enumParam(query, 'bucket', ['day', 'hour'] as const, 'day'), intParam(query, 'tz', 0, -840, 840), now());
+
+  router.get('/api/cost/series', ({ query }) => costSeries(db, rangeOf(query), enumParam(query, 'group', GROUPS, 'model')));
+  router.get('/api/cost/top', ({ query }) => {
+    const range = rangeOf(query);
+    return topSessions(db, range.from, range.to, intParam(query, 'limit', 10, 1, 100));
   });
 
   router.get('/api/ops/records', () => {

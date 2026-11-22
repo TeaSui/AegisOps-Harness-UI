@@ -72,12 +72,12 @@ Test: node --test server/test/live.test.ts
 ## T6: Where the money goes
 Blocked by: T1
 Covers: AEGIS-24, AEGIS-25
-Status: ready-for-agent
+Status: done
 What to build: spend and tokens per hour or local day grouped by model, project, skill, plugin or agent type with the cache share and unpriced counts, and the most expensive sessions of a period.
-- [ ] Day buckets follow the offset sent by the client; groups sum to the hand-computed totals
-- [ ] Cache share is cache read over all input, and "n/a" for an empty bucket
-- [ ] Top sessions are ranked by cost inside the range with the limit applied
-- [ ] A changed price table re-prices stored costs and records a re-pricing event
+- [x] Day buckets follow the offset sent by the client; groups sum to the hand-computed totals
+- [x] Cache share is cache read over all input, and "n/a" for an empty bucket
+- [x] Top sessions are ranked by cost inside the range with the limit applied
+- [x] A changed price table re-prices stored costs and records a re-pricing event
 Test: node --test server/test/cost.test.ts
 
 ## T7: Is the harness healthy and configured as I think
