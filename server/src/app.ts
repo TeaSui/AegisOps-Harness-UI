@@ -11,6 +11,7 @@ import { Activity } from './activity.ts';
 import { LEDGER_CATEGORIES, OUTCOMES, ackIntegrity, exportFindings, exportLedger, findings, integrity, ledger, triage, type FindingFilter, type LedgerFilter } from './audit.ts';
 import { rebuild } from './db.ts';
 import { Live } from './live.ts';
+import { Runs, resolveBinary } from './runs.ts';
 import { doctor, hookStats, inventory, opsSeries, toolStats } from './inventory.ts';
 import { GROUPS, costSeries, resolveRange, topSessions } from './cost.ts';
 import { HANDLED } from './http.ts';
@@ -51,6 +52,8 @@ export type Deps = { db: Db; indexer: Indexer; options: AppOptions; now: () => n
 const SEVERITIES = ['low', 'medium', 'high', 'critical'] as const;
 
 export async function createApp(options: AppOptions): Promise<App> {
+  // Control mode needs the harness binary; find it before anything is opened.
+  const bin = options.control ? resolveBinary(options.claudeBin) : null;
   const stateDir = prepareStateDir(options.stateDir, options.claudeHome);
   const unlock = lockStateDir(stateDir);
   const db = openDb(stateDir);
@@ -243,6 +246,14 @@ export async function createApp(options: AppOptions): Promise<App> {
     return { skippedLines: skipped.n, lines: skipped.lines, files: skipped.files, sourceRemoved: skipped.missing, types, unknownTypes: types.filter((t) => !t.known) };
   });
 
+  // The run routes exist only in control mode (AUTHZ-02).
+  const runs = bin ? new Runs(db, bin, activity, now) : null;
+  if (runs) {
+    router.get('/api/runs', () => runs.list());
+    router.post('/api/runs', ({ body }) => runs.launch(body));
+    router.post('/api/runs/:id/stop', ({ params }) => runs.stop(params.id));
+  }
+
   const here = dirname(fileURLToPath(import.meta.url));
   const door = new FrontDoor({ port: options.port, staticDir: options.staticDir ?? join(here, '..', '..', 'web', 'dist'), quiet: options.quiet, router });
   let port: number;
@@ -272,6 +283,7 @@ export async function createApp(options: AppOptions): Promise<App> {
     },
     pollLive: async () => live.poll(),
     close: async () => {
+      runs?.close();
       live.close();
       await door.close();
       await indexer.pass([]).catch(() => undefined);

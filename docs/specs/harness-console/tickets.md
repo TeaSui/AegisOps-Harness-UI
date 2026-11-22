@@ -95,13 +95,13 @@ Test: node --test server/test/ops.test.ts
 ## T8: Launch and stop a headless run, only in control mode
 Blocked by: T2, T5
 Covers: AEGIS-31..AEGIS-33
-Status: ready-for-agent
+Status: done
 What to build: in control mode a run starts the harness binary in a known project with the validated prompt, model and permission mode and can be stopped; without control mode the run routes do not exist; a bypass mode is never accepted.
-- [ ] A launch starts the stub binary with the exact expected argument list, the prompt on standard input and no Aegis variable in its environment
-- [ ] The launched session appears in the session list after the stub writes its transcript
-- [ ] Stop ends a running child; an unknown run id is 404
-- [ ] A bypass mode, a bad model, an unknown project and an empty prompt are each refused with 400 and nothing is started
-- [ ] Without control mode launch, list and stop answer 404
+- [x] A launch starts the stub binary with the exact expected argument list, the prompt on standard input and no Aegis variable in its environment
+- [x] The launched session appears in the session list after the stub writes its transcript
+- [x] Stop ends a running child; an unknown run id is 404
+- [x] A bypass mode, a bad model, an unknown project and an empty prompt are each refused with 400 and nothing is started
+- [x] Without control mode launch, list and stop answer 404
 Test: node --test server/test/runs.test.ts
 
 ## T9: The console shell with Now, Sessions and the session timeline

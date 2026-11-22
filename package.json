@@ -17,8 +17,8 @@
     "dev": "vite --config web/vite.config.ts",
     "build": "vite build --config web/vite.config.ts",
     "typecheck": "tsc -p server/tsconfig.json && tsc -p web/tsconfig.json",
-    "test": "node --disable-warning=ExperimentalWarning --test \"server/test/*.test.ts\"",
-    "test:junit": "node --disable-warning=ExperimentalWarning --test --test-reporter=junit --test-reporter-destination=test-results/junit.xml --test-reporter=spec --test-reporter-destination=stdout \"server/test/*.test.ts\""
+    "test": "node --disable-warning=ExperimentalWarning --test --test-timeout=60000 \"server/test/*.test.ts\"",
+    "test:junit": "node --disable-warning=ExperimentalWarning --test --test-timeout=60000 --test-reporter=junit --test-reporter-destination=test-results/junit.xml --test-reporter=spec --test-reporter-destination=stdout \"server/test/*.test.ts\""
   },
   "devDependencies": {
     "@types/node": "22.20.5",
