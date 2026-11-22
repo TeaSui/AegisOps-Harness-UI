@@ -6,6 +6,9 @@ import { Indexer, KNOWN_TYPES } from './indexer.ts';
 import { loadPrices } from './pricing.ts';
 import { FrontDoor, Router, enumParam, optEnumParam, optIntParam, page, strParam } from './http.ts';
 import { facets, getSession, listSessions, projects } from './sessions.ts';
+import { Timelines, contextSeries, filesTouched } from './timeline.ts';
+import { Activity } from './activity.ts';
+import { intParam, notFound } from './http.ts';
 
 export const VERSION = '0.1.0';
 
@@ -33,7 +36,7 @@ export type App = {
   close: () => Promise<void>;
 };
 
-export type Deps = { db: Db; indexer: Indexer; options: AppOptions; now: () => number; stateDir: string };
+export type Deps = { db: Db; indexer: Indexer; options: AppOptions; now: () => number; stateDir: string; activity: Activity; timelines: Timelines };
 
 const SEVERITIES = ['low', 'medium', 'high', 'critical'] as const;
 
@@ -42,7 +45,10 @@ export async function createApp(options: AppOptions): Promise<App> {
   const unlock = lockStateDir(stateDir);
   const db = openDb(stateDir);
   const indexer = new Indexer(db, options.claudeHome, () => loadPrices(options.configFile));
-  const deps: Deps = { db, indexer, options, now: options.now ?? Date.now, stateDir };
+  const now = options.now ?? Date.now;
+  const activity = new Activity(stateDir, now);
+  const timelines = new Timelines(db, options.claudeHome, join(options.claudeHome, 'projects'));
+  const deps: Deps = { db, indexer, options, now, stateDir, activity, timelines };
   const router = new Router();
 
   router.get('/api/overview', () => {
@@ -83,6 +89,37 @@ export async function createApp(options: AppOptions): Promise<App> {
   );
 
   router.get('/api/sessions/:id', ({ params }) => getSession(db, params.id));
+
+  const agentParam = (query: URLSearchParams) => {
+    const agent = strParam(query, 'agent', 100);
+    if (agent !== null && !/^[A-Za-z0-9_-]+$/.test(agent)) throw notFound();
+    return agent;
+  };
+  // Ids in the path are integers; anything else is not a record.
+  const recordRef = (params: Record<string, string>) => {
+    if (!/^\d{1,12}$/.test(params.file) || !/^\d{1,12}$/.test(params.line)) throw notFound();
+    return { file: Number(params.file), line: Number(params.line) };
+  };
+
+  router.get('/api/sessions/:id/timeline', ({ params, query }) =>
+    timelines.timeline(params.id, agentParam(query), intParam(query, 'offset', 0, 0, 100_000_000), intParam(query, 'limit', 300, 1, 1000)),
+  );
+  router.get('/api/sessions/:id/context', ({ params, query }) => contextSeries(db, timelines.fileOf(params.id, agentParam(query))));
+  router.get('/api/sessions/:id/files', ({ params }) => {
+    getSession(db, params.id);
+    return filesTouched(db, params.id);
+  });
+  router.get('/api/records/:file/:line', ({ params }) => {
+    const ref = recordRef(params);
+    return timelines.record(ref.file, ref.line, false);
+  });
+  router.post('/api/records/:file/:line/reveal', ({ params }) => {
+    const ref = recordRef(params);
+    const record = timelines.record(ref.file, ref.line, true);
+    activity.record('reveal', { file: ref.file, line: ref.line, session: record.session });
+    return record;
+  });
+  router.get('/api/audit/activity', ({ query }) => ({ items: activity.list(intParam(query, 'limit', 200, 1, 1000)) }));
 
   router.post('/api/audit/verify', async () => {
     const stats = await indexer.pass(undefined, { deep: true });

@@ -282,3 +282,89 @@ export async function start(home: Home, options: Partial<AppOptions> = {}): Prom
     close: () => app.close(),
   };
 }
+
+// ---- a session with a bit of everything, shared by the session, audit and ops tests -----------------------
+
+export const SECRETS = {
+  anthropic: 'sk-ant-api03-' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4',
+  password: 'hunter2secret',
+  bearer: 'abcdefghijklmnop1234',
+  apiKey: 'SECRETKEY12345678',
+  github: 'ghp_' + 'a1B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8',
+  aws: 'AKIAIOSFODNN7EXAMPLE',
+  privateKey: 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASC',
+  jwt: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk',
+  urlPassword: 'dbpass9876',
+};
+
+export function richHome(): Home {
+  const home = new Home();
+  const sid = 'rich';
+  const b = (seconds: number): Base => ({ sid, at: T0 + seconds * 1000 });
+  home.transcript('-work-alpha', sid, [
+    rec.title(sid, 'Deploy the zebra service'),
+    rec.permissionMode(sid, 'default'),
+    rec.prompt(b(0), 'please deploy the zebra service'),
+    rec.assistant(b(1), {
+      id: 'r1',
+      usage: { input: 100, cacheRead: 900, output: 10 },
+      content: [rec.text('Deploying the zebra now'), rec.toolUse('t1', 'Bash', { command: 'git push --force origin main' })],
+      extra: { attributionSkill: 'tea-sdlc:ship', attributionPlugin: 'tea-sdlc' },
+    }),
+    rec.toolResult(b(4), 't1', { content: `pushed with ${SECRETS.github}`, perm: { decision: 'accept', source: 'config', reasonType: 'classifier' } }),
+    rec.assistant(b(5), {
+      id: 'r2',
+      usage: { input: 200, cacheRead: 1800, output: 20 },
+      content: [
+        rec.toolUse('t2', 'Read', { file_path: '/work/alpha/src/app.ts' }),
+        rec.toolUse('t3', 'Edit', { file_path: '/work/alpha/src/app.ts', old_string: 'a', new_string: 'b' }),
+      ],
+    }),
+    rec.toolResult(b(6), 't2', { perm: null }),
+    rec.toolResult(b(7), 't3', { error: true, content: 'String to replace not found' }),
+    rec.assistant(b(8), {
+      id: 'r3',
+      usage: { input: 10, output: 5 },
+      content: [
+        rec.toolUse('t4', 'Bash', {
+          command: `curl -H "Authorization: Bearer ${SECRETS.bearer}" "https://api.example.com/x?api_key=${SECRETS.apiKey}"`,
+        }),
+      ],
+    }),
+    rec.toolResult(b(9), 't4', {
+      error: true,
+      denial: 'user-rejected',
+      perm: { decision: 'reject', source: 'config', reasonCode: 'bashMiss:too-complex' },
+    }),
+    rec.compaction(b(20), 150000, 30000),
+    rec.hook(b(21), 'hook_non_blocking_error', { event: 'PostToolUse', name: 'PostToolUse:Bash', command: 'python3 gate.py', durationMs: 120 }),
+    rec.apiError(b(22)),
+    rec.permissionMode(sid, 'acceptEdits'),
+    rec.assistant(b(30), {
+      id: 'r4',
+      usage: { input: 10, output: 5 },
+      content: [
+        rec.toolUse('t5', 'Write', { file_path: '/etc/hosts', content: 'x' }),
+        rec.toolUse('t6', 'mcp__github__create_issue', { title: 'bug', token: SECRETS.github }),
+        rec.toolUse('t7', 'WebFetch', { url: `https://user:${SECRETS.urlPassword}@example.com/docs` }),
+      ],
+    }),
+    rec.toolResult(b(31), 't6'),
+    rec.toolResult(b(33), 't7'),
+    rec.prompt(b(40), `my key is ${SECRETS.anthropic} and password=${SECRETS.password}`),
+    rec.assistant(b(41), {
+      id: 'r5',
+      usage: { input: 10, output: 5 },
+      content: [
+        rec.text(
+          `Found ${SECRETS.aws} and a key:\n-----BEGIN RSA PRIVATE KEY-----\n${SECRETS.privateKey}\n-----END RSA PRIVATE KEY-----\nand a session ${SECRETS.jwt}`,
+        ),
+      ],
+    }),
+  ]);
+  home.transcript('-work-beta', 'plain', [
+    rec.prompt({ sid: 'plain', cwd: '/work/beta', at: T0 + 86_400_000, entrypoint: 'sdk-cli' }, 'summarise the giraffe report', { promptSource: 'sdk', origin: undefined }),
+    rec.assistant({ sid: 'plain', cwd: '/work/beta', at: T0 + 86_401_000, entrypoint: 'sdk-cli' }, { id: 'p1', model: 'm-cheap', usage: { input: 1000, output: 100 }, content: [rec.text('The giraffe report is short.')] }),
+  ]);
+  return home;
+}

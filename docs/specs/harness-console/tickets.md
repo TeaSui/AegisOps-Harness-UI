@@ -33,17 +33,17 @@ Test: node --test server/test/access.test.ts
 ## T3: Find a session and read what happened in it
 Blocked by: T1
 Covers: AEGIS-12..AEGIS-17, AEGIS-23
-Status: ready-for-agent
+Status: done
 What to build: sessions can be filtered and searched by text; a session opens as a paged timeline that pairs tool calls with results, durations, outcomes and permission decisions and shows compactions, hooks, API errors and mode changes in place; every item cites its transcript file and line and opens the raw record; context size per response and files touched are served; secrets are masked everywhere and one record can be revealed deliberately.
-- [ ] Filters by project, model, entry point, time range, errors and risk combine with AND
-- [ ] A text search finds a session by a word of its prompt, reply or command and returns marked snippets
-- [ ] A tool call appears once with its result, duration, outcome and how it was allowed; a call with no result is pending
-- [ ] Compaction, hook, API-error and permission-mode items appear in order in the timeline
-- [ ] Every timeline item has a file id and line whose raw record matches the transcript line
-- [ ] The context series gives each response's context size and each compaction's freed tokens
-- [ ] Files read, edited and written are listed with counts
-- [ ] Seeded secrets appear in no list, timeline, record, search result or database file; reveal returns the original line and is logged
-- [ ] Record selectors with traversal, bad ids or lines outside the indexed range get 404
+- [x] Filters by project, model, entry point, time range, errors and risk combine with AND
+- [x] A text search finds a session by a word of its prompt, reply or command and returns marked snippets
+- [x] A tool call appears once with its result, duration, outcome and how it was allowed; a call with no result is pending
+- [x] Compaction, hook, API-error and permission-mode items appear in order in the timeline
+- [x] Every timeline item has a file id and line whose raw record matches the transcript line
+- [x] The context series gives each response's context size and each compaction's freed tokens
+- [x] Files read, edited and written are listed with counts
+- [x] Seeded secrets appear in no list, timeline, record, search result or database file; reveal returns the original line and is logged
+- [x] Record selectors with traversal, bad ids or lines outside the indexed range get 404
 Test: node --test server/test/sessions.test.ts
 
 ## T4: Audit ledger, risk findings, triage, export, tamper evidence
