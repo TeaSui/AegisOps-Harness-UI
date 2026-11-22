@@ -1,7 +1,7 @@
 ---
-status: accepted
+status: building
 key: AEGIS
-branch:
+branch: feat/harness-console
 security: required
 contract: none
 accepted_by: Tea Nguyen (delegated in request)

@@ -1,0 +1,33 @@
+{
+  "name": "aegis-harness-console",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Aegis: a local-first console to use, monitor, audit and operate Claude Code from the records the harness already writes.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "bin": {
+    "aegis": "bin/aegis"
+  },
+  "scripts": {
+    "start": "bin/aegis",
+    "start:control": "bin/aegis --control",
+    "dev": "vite --config web/vite.config.ts",
+    "build": "vite build --config web/vite.config.ts",
+    "typecheck": "tsc -p server/tsconfig.json && tsc -p web/tsconfig.json",
+    "test": "node --disable-warning=ExperimentalWarning --test \"server/test/*.test.ts\"",
+    "test:junit": "node --disable-warning=ExperimentalWarning --test --test-reporter=junit --test-reporter-destination=test-results/junit.xml --test-reporter=spec --test-reporter-destination=stdout \"server/test/*.test.ts\""
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/react": "19.3.0",
+    "@types/react-dom": "19.3.0",
+    "@vitejs/plugin-react": "6.3.0",
+    "react": "19.3.1",
+    "react-dom": "19.3.1",
+    "typescript": "7.0.2",
+    "vite": "8.3.8"
+  }
+}

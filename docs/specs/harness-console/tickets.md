@@ -5,17 +5,17 @@ The server slices (T1–T8) each end at the HTTP API, the spec's seam; the clien
 ## T1: Index the Claude home and list sessions with true usage and cost
 Blocked by: none
 Covers: AEGIS-1..AEGIS-8, AEGIS-35
-Status: ready-for-agent
+Status: done
 What to build: starting the server against a Claude home indexes every transcript incrementally and serves the session list and session summary with tokens counted once per response, cost from the harness price table, unpriced models flagged, the harness-reported cost beside the estimate, and subagents rolled into their parent; nothing under the Claude home changes.
-- [ ] Every main transcript in the synthetic home is listed as a session with no configuration
-- [ ] A second pass after an append reads only the appended bytes and updates the session
-- [ ] A response repeated over three records is counted once, with the last record's usage
-- [ ] Cost equals the hand-computed figure for input, output, cache read and both cache-write lifetimes
-- [ ] An unpriced model adds tokens, no cost, and one unpriced response to the count
-- [ ] The harness-reported cost sums the last total of each process run
-- [ ] A subagent's usage is in its parent's total and in the per-agent breakdown
-- [ ] A truncated last line is skipped, then indexed once completed; a corrupt complete line is counted and skipped
-- [ ] The synthetic home is byte-identical with unchanged modification times afterwards
+- [x] Every main transcript in the synthetic home is listed as a session with no configuration
+- [x] A second pass after an append reads only the appended bytes and updates the session
+- [x] A response repeated over three records is counted once, with the last record's usage
+- [x] Cost equals the hand-computed figure for input, output, cache read and both cache-write lifetimes
+- [x] An unpriced model adds tokens, no cost, and one unpriced response to the count
+- [x] The harness-reported cost sums the last total of each process run
+- [x] A subagent's usage is in its parent's total and in the per-agent breakdown
+- [x] A truncated last line is skipped, then indexed once completed; a corrupt complete line is counted and skipped
+- [x] The synthetic home is byte-identical with unchanged modification times afterwards
 Test: node --test server/test/index.test.ts
 
 ## T2: Loopback-only access with a per-start token
