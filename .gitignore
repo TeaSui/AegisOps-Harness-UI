@@ -1,0 +1,9 @@
+node_modules/
+web/dist/
+.data/
+test-results/
+*.log
+.DS_Store
+# the specs are part of this repository (a global ignore of docs/* would hide them)
+!docs/
+!docs/*
