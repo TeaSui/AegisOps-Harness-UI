@@ -16,8 +16,9 @@ type FileRef = { id: number; path: string; offset: number; lines: number; sessio
 export type Item = { kind: string; ts: number; file: number; line: number } & Record<string, unknown>;
 
 function cut(text: string, max = TEXT_MAX): { text: string; truncated: boolean } {
-  const masked = mask(text.length > max * 4 ? text.slice(0, max * 4) : text);
-  return masked.length > max || text.length > max * 4 ? { text: masked.slice(0, max), truncated: true } : { text: masked, truncated: false };
+  // masked first (on up to 64 KB), shortened after: a cut never leaves the front of a secret
+  const masked = mask(text);
+  return masked.length > max ? { text: masked.slice(0, max), truncated: true } : { text: masked, truncated: false };
 }
 
 function resultText(content: unknown): string {

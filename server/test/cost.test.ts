@@ -166,6 +166,33 @@ test('AEGIS-4 a changed price table re-prices stored costs and records the event
     assert.equal((await c.get('/api/sessions/A')).cost.unpricedCalls, 4);
   }));
 
+test('AEGIS-4 an unreadable price table changes nothing, also across a restart', async () => {
+  const home = costHome();
+  const now = () => at('2026-11-22T00:00:00Z');
+  let c = await start(home, { now });
+  near((await c.get('/api/sessions/A')).cost.estimated, 6.137);
+  await c.close();
+  writeFileSync(home.configFile, '{ not json');
+  c = await start(home, { now });
+  try {
+    // during the outage a new response is still priced at the last good rates
+    home.transcript('-work-beta', 'N', [rec.assistant({ sid: 'N', cwd: '/work/beta', at: at('2026-11-21T10:00:00Z') }, { id: 'n1', usage: { output: 1000 } })]);
+    await c.app.index();
+    near((await c.get('/api/sessions/N')).cost.estimated, 0.05);
+    assert.equal((await c.get('/api/sessions/N')).cost.unpricedCalls, 0);
+    near((await c.get('/api/sessions/A')).cost.estimated, 6.137);
+    assert.equal((await c.get('/api/ops/doctor')).checks.find((x: any) => x.id === 'sources.unreadable').status, 'warn');
+    // the same table comes back: nothing changed, so there is no re-pricing event
+    home.config({ additionalModelCostsCache: PRICES });
+    await c.app.index();
+    assert.deepEqual((await c.get(`/api/cost/series?${RANGE}`)).repricing, []);
+    near((await c.get('/api/sessions/A')).cost.estimated, 6.137);
+  } finally {
+    await c.close();
+    home.destroy();
+  }
+});
+
 test('AEGIS-24 a group named like an object property cannot corrupt the totals', async () => {
   const home = new Home();
   const b = { sid: 'p', at: at('2026-11-20T10:00:00Z') };

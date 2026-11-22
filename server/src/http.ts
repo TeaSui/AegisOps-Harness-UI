@@ -262,7 +262,9 @@ export class FrontDoor {
       res.end();
       return;
     }
-    res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
+    // after refusing a body for its size, the connection is closed rather than drained without bound
+    if (status === 413) res.on('finish', () => res.socket?.destroy());
+    res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store', ...(status === 413 ? { Connection: 'close' } : {}) });
     res.end(JSON.stringify({ error: { code, message, ...(id ? { id } : {}) } }));
   }
 

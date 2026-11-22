@@ -10,7 +10,8 @@ export const MASK_LIMIT = 64 * 1024;
 type Pattern = { kind: string; re: RegExp; replace?: (match: string, ...groups: string[]) => string };
 
 /** Names under which a value is a credential whatever it looks like. */
-const NAME = 'pass(?:word|wd|phrase)|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|authorization|credential';
+// (`_pwd` needs its underscore: PWD itself is the working directory.)
+const NAME = 'pass(?:word|wd|phrase)|_pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|authorization|credential';
 
 /**
  * The one exception to "whatever its shape": a bare number under a name containing "token" is a
@@ -22,7 +23,7 @@ function isTokenCount(name: string, value: string): boolean {
 
 // An authorization scheme word is not the credential; the value after it is masked by its own pattern.
 const valueReplace = (m: string, head: string, value: string) =>
-  isTokenCount(head, value) || value.startsWith('[masked:') || /^(?:Bearer|Basic|Digest|Negotiate)$/i.test(value) ? m : `${head}[masked:value]`;
+  isTokenCount(head, value) || value.startsWith('[masked:') || /^(?:Bearer|Basic|Token|ApiKey|Digest|Negotiate)$/i.test(value) ? m : `${head}[masked:value]`;
 
 export const PATTERNS: Pattern[] = [
   { kind: 'private-key', re: /-----BEGIN [A-Z ]{0,40}PRIVATE KEY(?: BLOCK)?-----[A-Za-z0-9+/=\s\\:.,()]{0,16000}(?:-----END [A-Z ]{0,40}PRIVATE KEY(?: BLOCK)?-----)?/g },
@@ -38,9 +39,16 @@ export const PATTERNS: Pattern[] = [
   { kind: 'atlassian-token', re: /\bATATT[A-Za-z0-9_=-]{20,400}/g },
   { kind: 'jwt', re: /\beyJ[A-Za-z0-9_-]{8,2000}\.[A-Za-z0-9_-]{8,4000}\.[A-Za-z0-9_-]{4,1000}/g },
   {
+    // Authorization: <scheme> <credential> — whatever the scheme and however short the credential
     kind: 'auth',
-    re: /\b(Bearer|Basic)\s+([A-Za-z0-9._~+/=-]{12,4000})/gi,
-    replace: (_m, scheme) => `${scheme} [masked:auth]`,
+    re: /(authorization\\?["']?\s{0,3}[:=]\s{0,3}\\?["']?(?:(?:Bearer|Basic|Token|ApiKey|Digest|Negotiate)\s{1,3})?)([^\s"'\\,;]{1,4000})/gi,
+    replace: (_m, head) => `${head}[masked:auth]`,
+  },
+  {
+    // a bare "Bearer xyz" outside a header; ordinary words after "Basic" are left alone
+    kind: 'auth',
+    re: /\b(Bearer|Basic)\s+([A-Za-z0-9._~+/=-]{8,4000})/g,
+    replace: (m, scheme, value) => (/[0-9+/=_~-]/.test(value) || value.length >= 24 ? `${scheme} [masked:auth]` : m),
   },
   {
     // scheme://user:password@host — the password may itself contain a slash
@@ -51,30 +59,31 @@ export const PATTERNS: Pattern[] = [
   {
     // name = "value with spaces", masked to the closing quote
     kind: 'value',
-    re: new RegExp(`((?:${NAME})[A-Za-z0-9_-]{0,30}\\\\?["']?\\s{0,3}[:=]\\s{0,3}\\\\?")([^"\\n]{1,400})`, 'gi'),
+    re: new RegExp(`((?:${NAME})[A-Za-z0-9_-]{0,30}\\\\?["']?\\s{0,3}[:=]\\s{0,3}\\\\?")([^"\\n]{1,4000})`, 'gi'),
     replace: valueReplace,
   },
   {
     kind: 'value',
-    re: new RegExp(`((?:${NAME})[A-Za-z0-9_-]{0,30}\\\\?["']?\\s{0,3}[:=]\\s{0,3}\\\\?')([^'\\n]{1,400})`, 'gi'),
+    re: new RegExp(`((?:${NAME})[A-Za-z0-9_-]{0,30}\\\\?["']?\\s{0,3}[:=]\\s{0,3}\\\\?')([^'\\n]{1,4000})`, 'gi'),
     replace: valueReplace,
   },
   {
     // password: several words — a password line is masked to its end
     kind: 'value',
-    re: /((?:pass(?:word|wd|phrase)|pwd)[A-Za-z0-9_-]{0,30}\s{0,3}[:=][ \t]{0,3})([^\s"'[][^\n"']{0,200})/gi,
+    re: /((?:pass(?:word|wd|phrase)|_pwd)[A-Za-z0-9_-]{0,30}\s{0,3}[:=][ \t]{0,3})([^\s"'[{][^\n"']{0,2000})/gi,
     replace: (_m, head) => `${head}[masked:value]`,
   },
   {
-    // name = value, NAME=value: an unquoted value runs to the next white space
+    // name = value, NAME=value: an unquoted value runs to white space or to a delimiter, so that JSON and
+    // command structure around it survive (a password is masked to the end of its line, above)
     kind: 'value',
-    re: new RegExp(`((?:${NAME})[A-Za-z0-9_-]{0,30}\\\\?["']?\\s{0,3}[:=]\\s{0,3})([^\\s"']{1,400})`, 'gi'),
+    re: new RegExp(`((?:${NAME})[A-Za-z0-9_-]{0,30}\\\\?["']?\\s{0,3}[:=]\\s{0,3})([^\\s"',;&)}\\]]{1,4000})`, 'gi'),
     replace: valueReplace,
   },
   {
     // --token value, --password=value
     kind: 'flag',
-    re: new RegExp(`(--?[a-z-]{0,20}(?:${NAME})[a-z-]{0,20}[ =]{1,2}["']?)([^\\s"']{1,400})`, 'gi'),
+    re: new RegExp(`(--?[a-z-]{0,20}(?:${NAME})[a-z-]{0,20}[ =]{1,2}["']?)([^\\s"',;&)}\\]]{1,4000})`, 'gi'),
     replace: valueReplace,
   },
   {
@@ -101,8 +110,12 @@ export function mask(text: string, limit = MASK_LIMIT): string {
     s = p.replace ? s.replace(p.re, p.replace as (m: string, ...g: string[]) => string) : s.replace(p.re, `[masked:${p.kind}]`);
   }
   if (!cut) return s;
-  // The cut may have split a secret, leaving a front half no pattern recognises: drop the last run of non-space.
-  return `${s.replace(/\S{1,4096}$/, '')}… [${text.length - limit} more characters not shown]`;
+  // The cut may have split a secret, leaving a front half no pattern recognises: drop the last run of
+  // non-space (looking back at most 4096 characters, with a plain scan so this stays linear).
+  let end = s.length;
+  const floor = Math.max(0, end - 4096);
+  while (end > floor && !/\s/.test(s[end - 1])) end--;
+  return `${s.slice(0, end)}… [${text.length - limit} more characters not shown]`;
 }
 
 /** Masks, then shortens, a field for storage in the index. */
@@ -115,8 +128,9 @@ const CREDENTIAL_KEY = new RegExp(`(?:${NAME})`, 'i');
 const MAX_DEPTH = 64;
 
 /** Masks every string in a JSON value; values under credential-like keys are masked whatever their shape. */
-export function maskDeep(value: unknown, key = '', depth = 0): unknown {
-  const credential = key !== '' && CREDENTIAL_KEY.test(key);
+export function maskDeep(value: unknown, key = '', depth = 0, inherited = false): unknown {
+  // everything under a credential-like key is a credential, however deep
+  const credential = inherited || (key !== '' && CREDENTIAL_KEY.test(key));
   if (typeof value === 'string') {
     if (credential && value !== '' && !value.startsWith('[masked:') && !isTokenCount(key, value)) return '[masked:value]';
     return mask(value);
@@ -125,9 +139,11 @@ export function maskDeep(value: unknown, key = '', depth = 0): unknown {
   if (value === null || typeof value !== 'object') return value;
   // Fail closed: what is nested too deep to walk is not shown at all.
   if (depth >= MAX_DEPTH) return '[masked:nested too deep to show]';
-  if (Array.isArray(value)) return value.map((v) => maskDeep(v, key, depth + 1));
+  if (Array.isArray(value)) return value.map((v) => maskDeep(v, key, depth + 1, inherited));
   const out: Record<string, unknown> = Object.create(null);
-  for (const [k, v] of Object.entries(value)) out[k] = maskDeep(v, k, depth + 1);
+  // (a token-named object such as a usage block is a set of counts, not a credential)
+  const pass = credential && !/token/i.test(key);
+  for (const [k, v] of Object.entries(value)) out[k] = maskDeep(v, pass ? key : k, depth + 1, pass);
   return out;
 }
 

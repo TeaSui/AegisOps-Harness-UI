@@ -6,8 +6,8 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import type { Db } from './db.ts';
 import { getMeta, setMeta } from './db.ts';
-import { preview } from './redact.ts';
-import { costOf, resolveModel, type PriceTable } from './pricing.ts';
+import { maskDeep, preview } from './redact.ts';
+import { costOf, resolveModel, type PriceTable, type Rates } from './pricing.ts';
 import { matchRead, matchShell, matchWrite, SEVERITY_RANK, type Finding } from './rules.ts';
 
 const CHUNK = 4 * 1024 * 1024;
@@ -81,7 +81,8 @@ export function shapeTool(name: string, input: any): ToolShape {
 
 function compact(input: unknown): string {
   try {
-    return JSON.stringify(input) ?? ''; // masked, then shortened, where it is stored
+    // masked with knowledge of the structure (a value nested under a credential-like key), then as text where it is stored
+    return JSON.stringify(maskDeep(input)) ?? '';
   } catch {
     return '';
   }
@@ -295,15 +296,19 @@ export class Indexer {
   private refreshPrices() {
     const next = this.loadPrices();
     this.priceSourceReadable = next.readable;
-    if (!next.readable && getMeta(this.db, 'price_hash') !== undefined) return; // keep the last good prices
     const stored = getMeta(this.db, 'price_hash');
+    if (!next.readable) {
+      // The last good prices stand, also across a restart: they are rebuilt from what was stored.
+      if (stored !== undefined && this.prices.models.size === 0) this.prices = this.storedPrices(stored);
+      return;
+    }
     this.prices = next;
     if (stored === next.hash) return;
     const rates = (model: string | null) => {
       const id = resolveModel(next, model);
       return id === null ? null : next.models.get(id)!;
     };
-    if (stored !== undefined) {
+    {
       let before: Record<string, unknown> = {};
       try {
         before = JSON.parse(getMeta(this.db, 'price_rates') ?? '{}');
@@ -343,8 +348,20 @@ export class Indexer {
     this.savePriceState(next);
   }
 
+  /** The prices in force when the table was last readable, as stored with the index. */
+  private storedPrices(hash: string): PriceTable {
+    const models = new Map<string, Rates>();
+    try {
+      for (const [model, r] of Object.entries(JSON.parse(getMeta(this.db, 'price_rates') ?? '{}') as Record<string, Rates | null>)) if (r) models.set(model, r);
+    } catch {
+      /* nothing stored: every model is unpriced until the table can be read */
+    }
+    return { models, hash, readable: false };
+  }
+
   /** Remembers the rates each indexed model was priced at, so the next change can say what it was before. */
   private savePriceState(table: PriceTable) {
+    if (!this.priceSourceReadable) return; // never overwrite the last good state with an outage
     const out: Record<string, unknown> = {};
     for (const { model } of this.db.prepare('SELECT DISTINCT model FROM api_calls WHERE model IS NOT NULL').all() as Array<{ model: string }>) {
       const id = resolveModel(table, model);

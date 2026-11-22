@@ -325,6 +325,30 @@ export const ruleById = (id: string) => RULE_BY_ID.get(id);
 
 export type Finding = { ruleId: string; severity: Severity; evidence: string };
 
+/** The bodies of the outermost $( ) and backtick substitutions, parentheses balanced. At most 20, in one pass. */
+function substitutions(command: string): string[] {
+  const out: string[] = [];
+  const n = command.length;
+  for (let i = 0; i < n && out.length < 20; i++) {
+    if (command[i] === '$' && command[i + 1] === '(' && command[i + 2] !== '(') {
+      let depth = 1;
+      let j = i + 2;
+      for (; j < n && depth > 0; j++) {
+        if (command[j] === '(') depth++;
+        else if (command[j] === ')') depth--;
+      }
+      if (depth === 0) out.push(command.slice(i + 2, j - 1));
+      i = j - 1;
+    } else if (command[i] === '`') {
+      const end = command.indexOf('`', i + 1);
+      if (end === -1) break;
+      out.push(command.slice(i + 1, end));
+      i = end;
+    }
+  }
+  return out;
+}
+
 /** Findings for one shell command, at most one per rule (the most severe match wins). */
 export function matchShell(commandRaw: string, depth = 0): Finding[] {
   const limited = commandRaw.length > RULE_LIMIT ? commandRaw.slice(0, RULE_LIMIT) : commandRaw;
@@ -337,12 +361,8 @@ export function matchShell(commandRaw: string, depth = 0): Finding[] {
   };
 
   // $(...) and backticks run a command wherever they appear
-  if (depth < 2) {
-    let seen = 0;
-    for (const m of command.matchAll(/\$\(([^()]{1,2000})\)|`([^`]{1,2000})`/g)) {
-      if (++seen > 20) break;
-      for (const f of matchShell(m[1] ?? m[2], depth + 1)) add(f.ruleId, f.evidence, f.severity);
-    }
+  if (depth < 3) {
+    for (const inner of substitutions(command)) for (const f of matchShell(inner, depth + 1)) add(f.ruleId, f.evidence, f.severity);
   }
 
   for (const pipeline of parse(command)) {

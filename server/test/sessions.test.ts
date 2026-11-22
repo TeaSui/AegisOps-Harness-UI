@@ -208,7 +208,7 @@ test('AEGIS-23 credential shapes: short, spaced, flagged, deeply nested and cut-
   const home = new (await import('./fixture.ts')).Home();
   const { rec } = await import('./fixture.ts');
   const b = { sid: 'm', at: T0 };
-  const secrets = ['abcdefgh', 'hunter', 'ab,cdefgh12', 'abc;defg1234', 'correct horse battery staple', 'my long pass phrase here', 'Sup3rSecret', 'Hunter2Pass', 'p%40ss/word', 'tinypw', 'lQIVBGZ1PGPKEYBODY', '987654321', 'ghp_deep' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4o5'];
+  const secrets = ['kkk111', 'ttt222', 'tok999abc', 's3cr3tvalue', 'shorty', 'nestedhello', 'straddle' + 'Z'.repeat(40), 'abcdefgh', 'hunter', 'ab,cdefgh12', 'abc;defg1234', 'correct horse battery staple', 'my long pass phrase here', 'Sup3rSecret', 'Hunter2Pass', 'p%40ss/word', 'tinypw', 'lQIVBGZ1PGPKEYBODY', '987654321', 'ghp_deep' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4o5'];
   let nested: any = { k: secrets[12] };
   for (let i = 0; i < 70; i++) nested = { level: nested };
   const token = 'ghp_' + 'Z9y8X7w6V5u4T3s2R1q0P9o8N7m6L5k4J3i2';
@@ -219,11 +219,15 @@ test('AEGIS-23 credential shapes: short, spaced, flagged, deeply nested and cut-
       'db_pwd=tinypw', '-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQIVBGZ1PGPKEYBODY\n-----END PGP PRIVATE KEY BLOCK-----',
       // not secrets: a count under a token name, and a word that merely starts like "password"
       'max_tokens=4096 and input_tokens: 862', 'passed: true', 'Authorization: Bearer abcdefghijklmnop1234',
+      '{"max_tokens": 4096} {"usage":{"input_tokens":862,"output_tokens":5}}', 'API_KEY=kkk111;echo hi && TOKEN=ttt222&y=2', 'PWD=/Users/x and pwd: /tmp', 'see Basic authentication docs',
+      'Authorization: Token tok999abc', 'Authorization: ApiKey s3cr3tvalue', 'Authorization: Bearer shorty',
     ].join('\n')),
     rec.assistant(b, {
       id: 'm1',
       content: [
-        rec.toolUse('deep', 'mcp__x__call', { nested, password: 987654321, max_tokens: 4096 }),
+        rec.toolUse('deep', 'mcp__x__call', { nested, password: 987654321, max_tokens: 4096, credentials: { user: { value: 'nestedhello' } }, usage_tokens: { input: 7 } }),
+        // a secret that straddles character 16,000 of a long reply
+        rec.text('y '.repeat(7990) + 'secret=straddle' + 'Z'.repeat(40) + ' tail'),
         // the secret sits just past where the evidence is cut
         rec.toolUse('cut', 'Bash', { command: `git push --force origin ${'x'.repeat(575)} ${token}` }),
       ],
@@ -240,11 +244,19 @@ test('AEGIS-23 credential shapes: short, spaced, flagged, deeply nested and cut-
     const prompt = t.items.find((i: any) => i.kind === 'prompt').text;
     assert.match(prompt, /max_tokens=4096 and input_tokens: 862/);
     assert.match(prompt, /passed: true/);
+    // structure around a masked value survives, counts stay counts, and the working directory is not a password
+    assert.match(prompt, /\{"max_tokens": 4096\} \{"usage":\{"input_tokens":862,"output_tokens":5\}\}/);
+    assert.match(prompt, /API_KEY=\[masked:value\];echo hi && TOKEN=\[masked:value\]&y=2/);
+    assert.match(prompt, /PWD=\/Users\/x and pwd: \/tmp/);
+    assert.match(prompt, /see Basic authentication docs/);
+    assert.match(prompt, /Authorization: Token \[masked:auth\]\nAuthorization: ApiKey \[masked:auth\]\nAuthorization: Bearer \[masked:auth\]/);
     assert.match(prompt, /Authorization: Bearer \[masked:auth\]/);
     assert.match(prompt, /\[masked:private-key\]/);
     const record = JSON.parse((await c.get(`/api/records/${t.file}/2`)).text);
     assert.equal(record.message.content[0].input.max_tokens, 4096);
     assert.equal(record.message.content[0].input.password, '[masked:value]');
+    assert.equal(record.message.content[0].input.credentials.user.value, '[masked:value]');
+    assert.equal(record.message.content[0].input.usage_tokens.input, 7);
     assert.equal(record.message.usage.input_tokens, 0); // usage numbers stay readable
     assert.equal((await c.get('/api/audit/findings')).items.find((f: any) => f.toolCall === 'cut').rule, 'git.force-push');
   } finally {
