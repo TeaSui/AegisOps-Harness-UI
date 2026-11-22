@@ -122,6 +122,12 @@ export class Indexer {
     this.prepare();
   }
 
+  /** After the derived tables were recreated: prepared statements refer to the old tables. */
+  reset() {
+    this.prepare();
+    this.deepPending = false;
+  }
+
   get priceTable() {
     return this.prices;
   }

@@ -49,14 +49,14 @@ Test: node --test server/test/sessions.test.ts
 ## T4: Audit ledger, risk findings, triage, export, tamper evidence
 Blocked by: T3
 Covers: AEGIS-18..AEGIS-22
-Status: ready-for-agent
+Status: done
 What to build: an auditor sees every command, write, fetch, MCP call and subagent dispatch across sessions with outcome and how it was allowed, risk findings with severity and evidence, can acknowledge a finding with a note that survives a full rebuild, export both lists as CSV and JSON Lines, and is alerted when an indexed transcript is rewritten or truncated.
-- [ ] The ledger lists the fixture's shell, write, fetch and MCP calls and filters by tool, category, project, time and outcome
-- [ ] Each built-in rule fires on its fixture command with its severity, and does not fire on the benign look-alike
-- [ ] An acknowledgement with a note survives a rebuild of the index
-- [ ] CSV export has the header, CRLF line ends, quoting and formula neutralisation; JSON Lines has one object per line
-- [ ] A truncated and a rewritten transcript each raise an alert that persists until acknowledged; a removed transcript is marked and raises none
-- [ ] Every rule and mask pattern finishes a 64 KB adversarial input inside the time budget
+- [x] The ledger lists the fixture's shell, write, fetch and MCP calls and filters by tool, category, project, time and outcome
+- [x] Each built-in rule fires on its fixture command with its severity, and does not fire on the benign look-alike
+- [x] An acknowledgement with a note survives a rebuild of the index
+- [x] CSV export has the header, CRLF line ends, quoting and formula neutralisation; JSON Lines has one object per line
+- [x] A truncated and a rewritten transcript each raise an alert that persists until acknowledged; a removed transcript is marked and raises none
+- [x] Every rule and mask pattern finishes a 64 KB adversarial input inside the time budget
 Test: node --test server/test/audit.test.ts
 
 ## T5: What is running now and what needs me

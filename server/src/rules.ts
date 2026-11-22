@@ -244,8 +244,10 @@ export function matchShell(commandRaw: string): Finding[] {
         if (args.some((a) => /^0?777$/.test(a)) || (recursive && args.some((a) => /^(?:a|o|ugo)?\+[rx]*w/.test(a)))) add('priv.chmod-open', text);
       }
 
-      if ((verb === 'env' || verb === 'printenv') && args.every((a) => a.startsWith('>') || a.startsWith('2>'))) add('secret.env-dump', text);
-      if (stage.words.length === 1 && (stage.words[0] === 'env' || stage.words[0] === 'printenv')) add('secret.env-dump', text);
+      // `printenv > file` still dumps everything: redirections are not arguments
+      const plain = args.filter((a, i) => !/^\d?>>?/.test(a) && !/^\d?>>?$/.test(args[i - 1] ?? ''));
+      if (verb === 'printenv' && plain.length === 0) add('secret.env-dump', text);
+      if (stage.words[0] === 'env' && stage.words.slice(1).every((a, i, rest) => /^\d?>>?/.test(a) || /^\d?>>?$/.test(rest[i - 1] ?? ''))) add('secret.env-dump', text);
       if (verb === 'export' && args.length === 1 && args[0] === '-p') add('secret.env-dump', text);
 
       if (verb === 'security' && args.some((a) => a === 'find-generic-password' || a === 'find-internet-password' || a === 'dump-keychain')) {
@@ -288,8 +290,11 @@ const TEMP_ROOTS = ['/tmp/', '/private/tmp/', '/var/folders/', '/private/var/fol
 export function matchWrite(path: string, ctx: RuleContext): Finding[] {
   if (!path.startsWith('/') || !ctx.cwd) return [];
   const under = (root: string) => path === root || path.startsWith(root.replace(/\/?$/, '/'));
-  if (under(ctx.cwd) || TEMP_ROOTS.some((r) => path.startsWith(r))) return [];
-  if (under(`${ctx.claudeHome}/plans`) || under(`${ctx.claudeHome}/projects`)) return [];
+  if (under(ctx.cwd)) return [];
+  // Inside the Claude home only the plan and per-project work areas are expected; settings are not.
+  const inHome = under(ctx.claudeHome);
+  if (inHome && (under(`${ctx.claudeHome}/plans`) || under(`${ctx.claudeHome}/projects`))) return [];
+  if (!inHome && TEMP_ROOTS.some((r) => path.startsWith(r))) return [];
   return [{ ruleId: 'fs.write-outside-project', severity: 'medium', evidence: path.slice(0, 600) }];
 }
 

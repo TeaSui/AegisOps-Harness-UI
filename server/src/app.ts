@@ -8,6 +8,9 @@ import { FrontDoor, Router, enumParam, optEnumParam, optIntParam, page, strParam
 import { facets, getSession, listSessions, projects } from './sessions.ts';
 import { Timelines, contextSeries, filesTouched } from './timeline.ts';
 import { Activity } from './activity.ts';
+import { LEDGER_CATEGORIES, OUTCOMES, ackIntegrity, exportFindings, exportLedger, findings, integrity, ledger, triage, type FindingFilter, type LedgerFilter } from './audit.ts';
+import { rebuild } from './db.ts';
+import { HANDLED } from './http.ts';
 import { intParam, notFound } from './http.ts';
 
 export const VERSION = '0.1.0';
@@ -33,6 +36,8 @@ export type App = {
   token: string;
   url: string;
   index: (options?: { deep?: boolean }) => Promise<void>;
+  /** Drops the derived tables and indexes everything again. Triage and alerts are kept. */
+  rebuild: () => Promise<void>;
   close: () => Promise<void>;
 };
 
@@ -121,6 +126,67 @@ export async function createApp(options: AppOptions): Promise<App> {
   });
   router.get('/api/audit/activity', ({ query }) => ({ items: activity.list(intParam(query, 'limit', 200, 1, 1000)) }));
 
+  const ledgerFilter = (query: URLSearchParams): LedgerFilter => ({
+    tool: strParam(query, 'tool', 200),
+    category: optEnumParam(query, 'category', LEDGER_CATEGORIES),
+    project: strParam(query, 'project'),
+    session: strParam(query, 'session'),
+    outcome: optEnumParam(query, 'outcome', OUTCOMES),
+    from: optIntParam(query, 'from'),
+    to: optIntParam(query, 'to'),
+    q: strParam(query, 'q', 200),
+  });
+  const findingFilter = (query: URLSearchParams): FindingFilter => ({
+    severity: optEnumParam(query, 'severity', SEVERITIES),
+    state: optEnumParam(query, 'state', ['open', 'acknowledged'] as const),
+    rule: strParam(query, 'rule', 100),
+    project: strParam(query, 'project'),
+    session: strParam(query, 'session'),
+    from: optIntParam(query, 'from'),
+    to: optIntParam(query, 'to'),
+  });
+  const filterSummary = (f: Record<string, unknown>) =>
+    Object.entries(f)
+      .filter(([k, v]) => v !== null && k !== 'q')
+      .map(([k, v]) => `${k}=${v}`)
+      .join(' ')
+      .slice(0, 300);
+
+  router.get('/api/audit/ledger', ({ query }) => {
+    const p = page(query);
+    return ledger(db, ledgerFilter(query), p.limit, p.offset);
+  });
+  router.get('/api/audit/ledger/export', ({ query, res }) => {
+    const format = enumParam(query, 'format', ['csv', 'jsonl'] as const, 'csv');
+    const f = ledgerFilter(query);
+    const rows = exportLedger(db, f, format, res, now());
+    activity.record('export', { list: 'ledger', format, rows, filter: filterSummary(f) });
+    return HANDLED;
+  });
+  router.get('/api/audit/findings', ({ query }) => {
+    const p = page(query);
+    return findings(db, findingFilter(query), p.limit, p.offset);
+  });
+  router.get('/api/audit/findings/export', ({ query, res }) => {
+    const format = enumParam(query, 'format', ['csv', 'jsonl'] as const, 'csv');
+    const f = findingFilter(query);
+    const rows = exportFindings(db, f, format, res, now());
+    activity.record('export', { list: 'findings', format, rows, filter: filterSummary(f) });
+    return HANDLED;
+  });
+  router.post('/api/audit/findings/:id/triage', ({ params, body }) => {
+    const result = triage(db, params.id, body, now());
+    activity.record('triage', { finding: params.id, state: result.state });
+    return result;
+  });
+  router.get('/api/audit/integrity', () => integrity(db, options.claudeHome));
+  router.post('/api/audit/integrity/:id/ack', ({ params, body }) => {
+    if (!/^\d{1,12}$/.test(params.id)) throw notFound();
+    const result = ackIntegrity(db, Number(params.id), body, now());
+    activity.record('integrity-ack', { alert: result.id });
+    return result;
+  });
+
   router.post('/api/audit/verify', async () => {
     const stats = await indexer.pass(undefined, { deep: true });
     return { files: stats.files, at: stats.at };
@@ -154,6 +220,12 @@ export async function createApp(options: AppOptions): Promise<App> {
     url: `http://127.0.0.1:${port}/?token=${door.token}`,
     index: async (o) => {
       await indexer.pass(undefined, o);
+    },
+    rebuild: async () => {
+      await indexer.pass([]);
+      rebuild(db);
+      indexer.reset();
+      await indexer.pass();
     },
     close: async () => {
       await door.close();
