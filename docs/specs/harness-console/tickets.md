@@ -107,20 +107,20 @@ Test: node --test server/test/runs.test.ts
 ## T9: The console shell with Now, Sessions and the session timeline
 Blocked by: T3, T5
 Covers: AEGIS-36
-Status: ready-for-agent
+Status: done
 What to build: the web client served by the server: navigation, command palette and keyboard movement, the Now view with live sessions and the attention queue updating by push, the session list with filters and search, and the session page with timeline, context chart, files, agents and the raw-record drawer with reveal.
-- [ ] The client type-checks and builds, and the server serves it with the security headers
-- [ ] The client source has no raw-HTML sink and loads nothing from a remote host
-- [ ] Driven in a browser against the real Claude home: Now, Sessions, a session timeline and a raw record open and are correct against the transcript
-- [ ] The palette and the keyboard criteria of the spec work
+- [x] The client type-checks and builds, and the server serves it with the security headers
+- [x] The client source has no raw-HTML sink and loads nothing from a remote host
+- [x] Driven in a browser against the real Claude home: Now, Sessions, a session timeline and a raw record open and are correct against the transcript
+- [x] The palette and the keyboard criteria of the spec work
 Test: node --test server/test/client.test.ts
 
 ## T10: Audit, Cost, Ops and Run views in both themes
 Blocked by: T4, T6, T7, T8, T9
 Covers: AEGIS-37
-Status: ready-for-agent
+Status: done
 What to build: the remaining views on the same shell: the audit ledger and findings with triage and export, integrity alerts and the activity log; cost charts by group with top sessions; hook, tool and API reliability with inventory and doctor; the run form and run list or the instructions to enable control mode; light and dark themes and the three layout widths.
-- [ ] Driven in a browser against the real Claude home: every view renders real data with no console error
-- [ ] Triage, export and reveal work end to end from the client
-- [ ] Light and dark themes and the widths 900, 1280 and 1920 show no overflow or unreadable contrast
+- [x] Driven in a browser against the real Claude home: every view renders real data with no console error
+- [x] Triage, export and reveal work end to end from the client
+- [x] Light and dark themes and the widths 900, 1280 and 1920 show no overflow or unreadable contrast
 Test: node --test server/test/client.test.ts

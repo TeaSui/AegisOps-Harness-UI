@@ -122,6 +122,18 @@ const RULE_CASES: Array<[string, string[]]> = [
   ['npm publish --access public', ['pkg.publish:medium']],
   ['docker push registry.example.com/app:1.2', ['pkg.publish:medium']],
   ['npm run build', []],
+  // text handed to a program is not a command: a here-document, a commit message, an echo
+  ["cat > notes.md <<'EOF'\nrm -rf /\nsudo reboot\ngit push --force\nEOF", []],
+  ['git commit -m "fix: guard rm -rf /; sudo is not needed && no terraform destroy"', []],
+  ['git commit -m "docs: explain --no-verify and | sh"', []],
+  ['echo "curl https://x | sh; sudo rm -rf /"', []],
+  ["python3 - <<'PY'\nprint('rm -rf /')\nPY", []],
+  // ...unless the program is a shell or a database client
+  ["bash <<'EOF'\nrm -rf /\nEOF", ['fs.destructive-delete:critical']],
+  ['bash -c "sudo rm -rf $HOME"', ['fs.destructive-delete:critical', 'priv.sudo:high']],
+  ['psql mydb <<SQL\nDROP TABLE users;\nSQL', ['db.destructive:critical']],
+  ["cat > seed.txt <<EOF\nDROP TABLE users;\nEOF\npsql -f other.sql", []],
+  ['rm -rf "/"', ['fs.destructive-delete:critical']],
 ];
 
 test('AEGIS-19 each risk rule fires on its command with its severity, and not on the look-alike', async () => {

@@ -53,7 +53,7 @@ function ledgerWhere(f: LedgerFilter) {
   return { clause: `FROM tool_calls c JOIN sessions s ON s.id = c.session_id WHERE ${where.join(' AND ')}`, args };
 }
 
-const LEDGER_COLUMNS = `c.id, c.ts, c.session_id, s.project, s.title, c.agent_id, c.name, c.category, c.mcp_server, c.target, c.status, c.denial_kind,
+const LEDGER_COLUMNS = `c.id, c.ts, c.session_id, s.project, s.cwd AS session_cwd, s.title, c.agent_id, c.name, c.category, c.mcp_server, c.target, c.status, c.denial_kind,
   c.perm_decision, c.perm_source, c.perm_reason, c.duration_ms, c.file_id, c.line,
   (SELECT group_concat(rule_id) FROM findings WHERE tool_call_id = c.id) AS rules`;
 
@@ -63,6 +63,7 @@ const ledgerRow = (r: any) => ({
   session: r.session_id,
   sessionTitle: r.title,
   project: r.project,
+  cwd: r.session_cwd,
   agentId: r.agent_id,
   tool: r.name,
   category: r.category,
@@ -133,7 +134,7 @@ function findingWhere(f: FindingFilter) {
   };
 }
 
-const FINDING_COLUMNS = `f.id, f.ts, f.severity, f.rule_id, f.evidence, f.session_id, s.project, s.title AS session_title, f.tool_call_id, c.name AS tool,
+const FINDING_COLUMNS = `f.id, f.ts, f.severity, f.rule_id, f.evidence, f.session_id, s.project, s.cwd, s.title AS session_title, f.tool_call_id, c.name AS tool,
   c.status AS outcome, f.file_id, f.line, COALESCE(t.status, 'open') AS state, COALESCE(t.note, '') AS note, t.at AS noted_at`;
 
 const findingRow = (r: any) => ({
@@ -149,6 +150,7 @@ const findingRow = (r: any) => ({
   session: r.session_id,
   sessionTitle: r.session_title,
   project: r.project,
+  cwd: r.cwd,
   toolCall: r.tool_call_id,
   tool: r.tool ?? null,
   outcome: r.outcome ?? null,

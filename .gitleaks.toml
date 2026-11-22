@@ -1,0 +1,7 @@
+# The tests seed made-up secrets on purpose, to prove that Aegis masks them. Nothing under server/test is real.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Seeded fake secrets in the masking tests"
+paths = ['''^server/test/''']

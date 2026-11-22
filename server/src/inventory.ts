@@ -184,25 +184,25 @@ export function doctor(db: Db, claudeHome: string, configFile: string, pricesRea
     checks.push({ id, title, status: evidence.length ? bad : 'pass', detail: evidence.length ? badDetail : okDetail, evidence: evidence.slice(0, 50) });
 
   check(
-    'mode.bypass', 'Permission checks are on by default', 'fail',
+    'mode.bypass', 'Default permission mode', 'fail',
     inv.settings.filter((s) => s.defaultMode === 'bypassPermissions').map((s) => `defaultMode is bypassPermissions in ${where(s)}`),
     'No settings file makes bypassPermissions the default mode.',
     'A settings file makes every session start with permission checks bypassed.',
   );
   check(
-    'allow.broad', 'Allow rules are specific', 'warn',
+    'allow.broad', 'Breadth of allow rules', 'warn',
     inv.settings.flatMap((s) => s.allow.filter((r) => BROAD_ALLOW.has(r.trim())).map((r) => `${r} in ${where(s)}`)),
     'No allow rule permits every shell command or every tool.',
     'An allow rule permits every shell command or every tool without asking.',
   );
   check(
-    'env.credentials', 'No credentials in settings files', 'warn',
+    'env.credentials', 'Credentials in settings files', 'warn',
     inv.settings.flatMap((s) => s.envKeys.filter(isCredentialName).map((k) => `${k} in ${where(s)}`)),
     'No settings environment key looks like a credential.',
     'These environment keys look like credentials and are stored in plain text in a settings file.',
   );
   check(
-    'plugin.missing', 'Enabled plugins are installed', 'warn',
+    'plugin.missing', 'Enabled plugins that are not installed', 'warn',
     inv.missingPlugins.map((id) => `${id} is enabled but not in the plugin registry`),
     inv.registryFound ? 'Every enabled plugin is in the plugin registry.' : 'No plugin registry was found, so there is nothing to compare.',
     'A plugin is enabled in settings but is not installed.',
@@ -211,23 +211,23 @@ export function doctor(db: Db, claudeHome: string, configFile: string, pricesRea
   const since = now - 7 * 86_400_000;
   const failing = hookStats(db, since, now)
     .filter((h) => h.runs >= 5 && (h.failures + h.blocks) / h.runs > 0.2)
-    .map((h) => `${h.event}: ${h.command} failed or blocked ${h.failures + h.blocks} of ${h.runs} runs in the last 7 days`);
-  check('hooks.failing', 'Hooks are reliable', 'warn', failing, 'No hook with 5 or more runs failed more than 20% of the time in the last 7 days.', 'A hook fails often.');
+    .map((h) => `${h.event}: ${h.command} failed or blocked ${h.failures + h.blocks} of ${h.runs} recorded runs in the last 7 days`);
+  check('hooks.failing', 'Hook reliability', 'warn', failing, 'No hook with 5 or more runs failed more than 20% of the time in the last 7 days.', 'A hook fails often. Outside stop hooks, the harness records a run only when it fails or prints output, so the share is of recorded runs.');
 
   const sources = [...inv.unreadable];
   if (!pricesReadable && !sources.some((s) => s.includes('user configuration'))) sources.push('the price table in the user configuration file');
-  check('sources.unreadable', 'Every source could be read', 'warn', sources, 'Settings, registry and price table were read.', 'A source is missing or is not valid JSON; its data is empty.');
+  check('sources.unreadable', 'Sources that could not be read', 'warn', sources, 'Settings, registry and price table were read.', 'A source is missing or is not valid JSON; its data is empty.');
 
   const skipped = db.prepare('SELECT path, skipped FROM files WHERE skipped > 0 ORDER BY skipped DESC LIMIT 20').all() as Array<{ path: string; skipped: number }>;
   check(
-    'index.skipped', 'Every transcript line was indexed', 'warn',
+    'index.skipped', 'Transcript lines skipped', 'warn',
     skipped.map((f) => `${f.skipped} line${f.skipped === 1 ? '' : 's'} skipped in ${relative(claudeHome, f.path)}`),
     'No transcript line was skipped.',
     'Lines that were not valid JSON, or were larger than 32 MB, were skipped.',
   );
   const alerts = db.prepare('SELECT path, reason FROM integrity_alerts WHERE ack_at IS NULL ORDER BY at DESC LIMIT 20').all() as Array<{ path: string; reason: string }>;
   check(
-    'integrity.alerts', 'Indexed transcripts are unchanged', 'fail',
+    'integrity.alerts', 'Transcript integrity', 'fail',
     alerts.map((a) => `${relative(claudeHome, a.path)} was ${a.reason}`),
     'No transcript was rewritten or truncated after it was indexed.',
     'An indexed transcript changed in a way other than being appended to. Review it in Audit.',

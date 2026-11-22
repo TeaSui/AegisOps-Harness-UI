@@ -23,24 +23,112 @@ export type Rule = {
   description: string;
 };
 
-type Stage = { words: string[]; text: string };
-type Pipeline = { stages: Stage[]; text: string };
+/** `bare` is the stage with every quoted multi-word argument emptied: what was typed as command, not as text. */
+type Stage = { words: string[]; text: string; bare?: string };
+type Pipeline = { stages: Stage[]; text: string; bare?: string };
 
 const WRAPPERS = new Set(['sudo', 'doas', 'env', 'time', 'nohup', 'command', 'exec', 'nice', 'builtin', 'then', 'do', 'else', '(', '{', '!']);
 
+/**
+ * Splits a command into pipelines and stages. Quote-aware: separators inside quotes do not split,
+ * and a quoted argument is one word (so the text of a commit message is never read as a command).
+ */
 function parse(command: string): Pipeline[] {
   const out: Pipeline[] = [];
-  for (const part of command.split(/&&|\|\||;|\n/)) {
-    const text = part.trim();
-    if (!text) continue;
-    const stages = text
-      .split('|')
-      .map((s) => s.trim())
-      .filter(Boolean)
-      .map((s) => ({ text: s, words: s.split(/\s+/).slice(0, 400) }));
-    if (stages.length) out.push({ stages, text });
+  let stages: Stage[] = [];
+  let words: string[] = [];
+  let word = '';
+  let inWord = false;
+  let quote = '';
+  let stageStart = 0;
+  let pipeStart = 0;
+  const endWord = () => {
+    if (inWord && words.length < 400) words.push(word);
+    word = '';
+    inWord = false;
+  };
+  const endStage = (end: number) => {
+    endWord();
+    const text = command.slice(stageStart, end).trim();
+    if (words.length && text) stages.push({ words, text, bare: words.map((w) => (/\s/.test(w) ? '""' : w)).join(' ') });
+    words = [];
+  };
+  const endPipeline = (end: number) => {
+    endStage(end);
+    if (stages.length) out.push({ stages, text: command.slice(pipeStart, end).trim(), bare: stages.map((x) => x.bare).join(' | ') });
+    stages = [];
+  };
+  const n = command.length;
+  for (let i = 0; i < n; i++) {
+    const ch = command[i];
+    if (quote) {
+      if (ch === quote) quote = '';
+      else if (ch === '\\' && quote === '"' && i + 1 < n) word += command[++i];
+      else word += ch;
+      continue;
+    }
+    if (ch === "'" || ch === '"') {
+      quote = ch;
+      inWord = true;
+    } else if (ch === '\\' && i + 1 < n) {
+      if (command[i + 1] === '\n') i++;
+      else {
+        word += command[++i];
+        inWord = true;
+      }
+    } else if (ch === ' ' || ch === '\t') endWord();
+    else if (ch === '\n' || ch === ';') {
+      endPipeline(i);
+      stageStart = pipeStart = i + 1;
+    } else if (ch === '&' && command[i + 1] === '&') {
+      endPipeline(i);
+      i++;
+      stageStart = pipeStart = i + 1;
+    } else if (ch === '|' && command[i + 1] === '|') {
+      endPipeline(i);
+      i++;
+      stageStart = pipeStart = i + 1;
+    } else if (ch === '|') {
+      endStage(i);
+      stageStart = i + 1;
+    } else {
+      word += ch;
+      inWord = true;
+    }
   }
+  endPipeline(n);
   return out;
+}
+
+const HEREDOC = /(?<!<)<<(?!<)-?[ \t]{0,4}(['"]?)([A-Za-z_][A-Za-z0-9_]{0,40})\1/;
+
+/**
+ * Takes here-document bodies out of a command. A body is text handed to a program, not commands:
+ * writing a file whose content mentions `rm -rf /` runs nothing. The exceptions are kept: a body fed
+ * to a shell is commands, and a body fed to a database client is statements.
+ */
+function splitHeredocs(command: string): { shell: string; sql: string } {
+  if (!command.includes('<<')) return { shell: command, sql: command };
+  const lines = command.split('\n');
+  const shell: string[] = [];
+  const sql: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    shell.push(line);
+    sql.push(line);
+    const m = HEREDOC.exec(line);
+    if (!m) continue;
+    const before = line.slice(0, m.index);
+    const stage = before.slice(Math.max(before.lastIndexOf('|'), before.lastIndexOf(';'), before.lastIndexOf('&')) + 1);
+    const verb = verbOf({ text: stage, words: stage.trim().split(/\s+/).slice(0, 40) }).verb;
+    const toShell = SHELLS.has(verb);
+    const toSql = DB_CLIENT.test(stage);
+    for (i++; i < lines.length && lines[i].trim() !== m[2]; i++) {
+      if (toShell) shell.push(lines[i]);
+      if (toSql) sql.push(lines[i]);
+    }
+  }
+  return { shell: shell.join('\n'), sql: sql.join('\n') };
 }
 
 /** The stage's command words with wrappers and leading assignments removed. */
@@ -59,7 +147,7 @@ function verbOf(stage: Stage): { verb: string; args: string[]; sudo: boolean } {
   return { verb: first.slice(first.lastIndexOf('/') + 1), args: w.slice(i + 1), sudo };
 }
 
-const unquote = (s: string) => s.replace(/^["']+|["');]+$/g, '');
+const unquote = (s: string) => s.replace(/[);]+$/g, '');
 const isFlag = (s: string) => s.startsWith('-');
 const shortHas = (arg: string, letter: string) => /^-[A-Za-z]+$/.test(arg) && arg.includes(letter);
 
@@ -189,8 +277,9 @@ export const ruleById = (id: string) => RULE_BY_ID.get(id);
 export type Finding = { ruleId: string; severity: Severity; evidence: string };
 
 /** Findings for one shell command, at most one per rule (the most severe match wins). */
-export function matchShell(commandRaw: string): Finding[] {
-  const command = commandRaw.length > RULE_LIMIT ? commandRaw.slice(0, RULE_LIMIT) : commandRaw;
+export function matchShell(commandRaw: string, depth = 0): Finding[] {
+  const limited = commandRaw.length > RULE_LIMIT ? commandRaw.slice(0, RULE_LIMIT) : commandRaw;
+  const { shell: command, sql } = splitHeredocs(limited);
   const found = new Map<string, Finding>();
   const add = (ruleId: string, evidence: string, severity?: Severity) => {
     const sev = severity ?? RULE_BY_ID.get(ruleId)!.severity;
@@ -204,6 +293,14 @@ export function matchShell(commandRaw: string): Finding[] {
       const { verb, args, sudo } = verbOf(stage);
       const text = stage.text;
       if (sudo) add('priv.sudo', text);
+      // sh -c "<command>": the quoted argument is itself a command
+      if (SHELLS.has(verb) && depth < 2) {
+        const c = args.indexOf('-c');
+        if (c !== -1 && args[c + 1]) {
+          for (const f of matchShell(args[c + 1], depth + 1)) add(f.ruleId, f.evidence, f.severity);
+          if (/^\s*\$\(\s*(?:curl|wget)\b/.test(args[c + 1])) add('exec.pipe-to-shell', text);
+        }
+      }
       if (verb === 'su' && args.some((a) => a === '-' || a === '-l' || a === '--login')) add('priv.sudo', text);
 
       if (verb === 'rm') {
@@ -253,7 +350,7 @@ export function matchShell(commandRaw: string): Finding[] {
       if (verb === 'security' && args.some((a) => a === 'find-generic-password' || a === 'find-internet-password' || a === 'dump-keychain')) {
         add('secret.credential-read', text);
       }
-      if ((READERS.has(verb) || /<\s*\S/.test(text)) && isCredentialPath(text)) add('secret.credential-read', text);
+      if ((READERS.has(verb) || /<\s*\S/.test(stage.bare ?? text)) && isCredentialPath(stage.bare ?? text)) add('secret.credential-read', text);
 
       if (verb === 'curl') {
         if (args.some((a) => a === '--insecure' || shortHas(a, 'k'))) add('net.tls-off', text);
@@ -269,16 +366,17 @@ export function matchShell(commandRaw: string): Finding[] {
     });
 
     const text = pipeline.text;
-    if (/\b(?:ba|z|da|k)?sh\s+(?:-c\s+)?["']?(?:<\(|\$\()\s*(?:curl|wget)\b/.test(text)) add('exec.pipe-to-shell', text);
-    for (const re of TLS_OFF) if (re.test(text)) add('net.tls-off', text);
-    for (const { re, severity } of INFRA) if (re.test(text)) add('infra.destroy', text, severity);
-    for (const re of PUBLISH) if (re.test(text)) add('pkg.publish', text);
+    const bare = pipeline.bare ?? text;
+    if (/\b(?:ba|z|da|k)?sh\s+(?:<\(|\$\()\s*(?:curl|wget)\b/.test(bare)) add('exec.pipe-to-shell', text);
+    for (const re of TLS_OFF) if (re.test(bare)) add('net.tls-off', text);
+    for (const { re, severity } of INFRA) if (re.test(bare)) add('infra.destroy', text, severity);
+    for (const re of PUBLISH) if (re.test(bare)) add('pkg.publish', text);
   }
 
-  if (DB_CLIENT.test(command)) {
+  if (DB_CLIENT.test(sql)) {
     for (const re of DB_DESTRUCTIVE) {
-      const m = re.exec(command);
-      if (m) add('db.destructive', command.slice(Math.max(0, m.index - 120), m.index + 200));
+      const m = re.exec(sql);
+      if (m) add('db.destructive', sql.slice(Math.max(0, m.index - 120), m.index + 200));
     }
   }
   return [...found.values()];

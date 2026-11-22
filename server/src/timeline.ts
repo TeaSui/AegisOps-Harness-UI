@@ -148,7 +148,7 @@ export class Timelines {
           name: block.name,
           category: shape.category,
           mcpServer: shape.mcpServer,
-          target: cut(shape.target, 2000).text,
+          target: cut(shape.target, 4000).text,
           input: input.length > TEXT_MAX ? input.slice(0, TEXT_MAX) : input,
           inputTruncated: input.length > TEXT_MAX,
           status: 'pending',
