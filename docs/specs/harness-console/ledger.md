@@ -15,3 +15,5 @@ Append-only, written by `aidlc` only.
 - 2026-11-22T11:35:35Z task-done T8 exit=0 fingerprint=b4f09da71b143f20faa5b12204d77696225b671c29680c475674b7d45fc27553 cmd="node --test server/test/runs.test.ts"
 - 2026-11-22T11:54:46Z task-done T9 exit=0 fingerprint=71cb1a155d148b535af02a17b7e24e94700e61f6f2451edcb4607d889cae6f17 cmd="node --test server/test/client.test.ts"
 - 2026-11-22T11:54:47Z task-done T10 exit=0 fingerprint=71cb1a155d148b535af02a17b7e24e94700e61f6f2451edcb4607d889cae6f17 cmd="node --test server/test/client.test.ts"
+- 2026-11-22T11:54:59Z verify exit=0 fingerprint=71cb1a155d148b535af02a17b7e24e94700e61f6f2451edcb4607d889cae6f17 cmd="npm run test:junit" junit=55 passed, 0 failed req-pass=AEGIS-1,AEGIS-10,AEGIS-11,AEGIS-12,AEGIS-13,AEGIS-14,AEGIS-15,AEGIS-16,AEGIS-17,AEGIS-18,AEGIS-19,AEGIS-2,AEGIS-20,AEGIS-21,AEGIS-22,AEGIS-23,AEGIS-24,AEGIS-25,AEGIS-26,AEGIS-27,AEGIS-28,AEGIS-29,AEGIS-3,AEGIS-30,AEGIS-31,AEGIS-32,AEGIS-33,AEGIS-34,AEGIS-35,AEGIS-36,AEGIS-37,AEGIS-4,AEGIS-5,AEGIS-6,AEGIS-7,AEGIS-8,AEGIS-9
+- 2026-11-22T11:55:04Z advance building→verified

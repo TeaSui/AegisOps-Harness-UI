@@ -58,7 +58,7 @@ function Health({ query }: { query: URLSearchParams }) {
       <div className="multiples">
         {charts.map(([key, title, note]) => (
           <ChartFrame key={key} title={`${title}: ${int(sum(key))}`} note={note}>
-            <Columns columns={cols(key)} series={ONE(key, title)} format={int} height={150} />
+            <Columns columns={cols(key)} series={ONE(key, title)} format={int} height={150} integer />
           </ChartFrame>
         ))}
       </div>

@@ -21,10 +21,12 @@ function useWidth(): [React.RefObject<HTMLDivElement | null>, number] {
 }
 
 /** Round axis maximum and 3 or 4 clean ticks. */
-export function niceScale(max: number): { top: number; ticks: number[] } {
+export function niceScale(max: number, integer = false): { top: number; ticks: number[] } {
   if (!(max > 0)) return { top: 1, ticks: [0, 1] };
   const pow = Math.pow(10, Math.floor(Math.log10(max)));
-  const step = [1, 2, 2.5, 5, 10].map((m) => (m * pow) / 2).find((s) => max / s <= 4) ?? pow * 5;
+  // counts get whole-number steps (1, 2, 5, 10...); money and tokens may use halves
+  const candidates = (integer ? [1, 2, 5, 10, 20, 50] : [1, 2, 2.5, 5, 10]).map((m) => (m * pow) / (integer ? 10 : 2)).filter((v) => !integer || (v >= 1 && Number.isInteger(v)));
+  const step = candidates.find((v) => max / v <= 4) ?? pow * 5;
   const top = Math.ceil(max / step) * step;
   const ticks: number[] = [];
   for (let v = 0; v <= top + step / 1000; v += step) ticks.push(Number(v.toPrecision(12)));
@@ -40,14 +42,14 @@ type Tip = { x: number; y: number; column: Column } | null;
  * Stacked columns over time: one baseline, a 2px surface gap between segments, rounded only at the top.
  * A single series draws plain columns and needs no legend.
  */
-export function Columns({ columns, series, format, height = 220, tickFormat }: { columns: Column[]; series: Series[]; format: (v: number) => string; height?: number; tickFormat?: (v: number) => string }) {
+export function Columns({ columns, series, format, height = 220, tickFormat, integer }: { columns: Column[]; series: Series[]; format: (v: number) => string; height?: number; tickFormat?: (v: number) => string; integer?: boolean }) {
   const [ref, width] = useWidth();
   const [tip, setTip] = useState<Tip>(null);
   const m = { top: 10, right: 8, bottom: 22, left: 46 };
   const w = Math.max(0, width - m.left - m.right);
   const h = height - m.top - m.bottom;
   const totals = columns.map((c) => series.reduce((s, x) => s + (c.values[x.key] ?? 0), 0));
-  const { top, ticks } = niceScale(Math.max(0, ...totals));
+  const { top, ticks } = niceScale(Math.max(0, ...totals), integer);
   const band = columns.length ? w / columns.length : 0;
   const bar = Math.max(1, Math.min(24, band - 3));
   const y = (v: number) => m.top + h - (v / top) * h;
