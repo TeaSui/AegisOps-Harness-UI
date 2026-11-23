@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { richHome, SECRETS, start, T0, type Client, type Home } from './fixture.ts';
+import { Home, rec, richHome, SECRETS, start, T0, type Client } from './fixture.ts';
 
 async function withRich(fn: (c: Client, home: Home) => Promise<void>, o: { changesHome?: boolean } = {}) {
   const home = richHome();
@@ -340,3 +340,177 @@ test('AEGIS-15 record selectors outside the index are refused', () =>
     assert.deepEqual(ids(await c.get('/api/sessions')), ['plain', 'rich']);
     assert.equal((await c.getRes('/api/sessions/escape')).status, 404);
   }, { changesHome: true }));
+
+test('AEGIS-41 a session list can carry the shape of each session: its events in order, binned, worst kind per bin', async () => {
+  const { binRanks } = await import('../src/sessions.ts');
+  assert.deepEqual(binRanks([0, 0, 3, 1, 2, 0], 3), [0, 3, 2]);
+  assert.deepEqual(binRanks([1, 2], 32), [1, 2]);
+  // one failure among twenty calls does not make the stretch a failure; two do
+  assert.deepEqual(binRanks([3, ...new Array(19).fill(1)], 1), [1]);
+  assert.deepEqual(binRanks([3, 3, ...new Array(18).fill(1)], 1), [3]);
+  assert.deepEqual(binRanks([0, 0, 2, 0], 1), [2]);
+  assert.deepEqual(binRanks([], 32), []);
+  const home = new Home();
+  const b = (s: number) => ({ sid: 'S', at: T0 + s * 1000 });
+  home.transcript('-work-alpha', 'S', [
+    rec.prompt(b(0), 'do the thing'),
+    rec.assistant(b(1), { id: 'm1', content: [rec.toolUse('x1', 'Bash', { command: 'ls' })] }),
+    rec.toolResult(b(2), 'x1'),
+    rec.assistant(b(3), { id: 'm2', content: [rec.toolUse('x2', 'Bash', { command: 'false' })] }),
+    rec.toolResult(b(4), 'x2', { error: true }),
+    rec.apiError(b(5)),
+    rec.assistant(b(6), { id: 'm3' }),
+  ]);
+  // what a subagent did is part of the session's shape; the task it was handed is not one of your prompts
+  home.transcript('-work-alpha', 'S', [rec.prompt({ sid: 'S', at: T0 + 6500, agentId: 'a1' }, 'look around'), rec.assistant({ sid: 'S', at: T0 + 7000, agentId: 'a1' }, { id: 'm4' })], { agent: 'a1' });
+  home.transcript('-work-alpha', 'E', [rec.title('E', 'empty')]);
+  const c = await start(home);
+  try {
+    const plain = await c.get('/api/sessions');
+    assert.equal('shape' in plain.items[0], false);
+    const shaped = await c.get('/api/sessions?shape=1');
+    const of = (id: string) => shaped.items.find((s: any) => s.id === id).shape;
+    // 0 a response, 1 a tool call, 2 a prompt of yours, 3 a failure
+    assert.deepEqual(of('S'), [2, 0, 1, 0, 3, 3, 0, 0]);
+    assert.deepEqual(of('E'), []);
+    // a span of responses lists the sessions that got one in it, not every session whose life overlaps it
+    const ids = async (q: string) => (await c.get(`/api/sessions?${q}`)).items.map((x: any) => x.id);
+    assert.deepEqual(await ids(`callsFrom=${T0}&callsTo=${T0 + 10_000}`), ['S']);
+    assert.deepEqual(await ids(`callsFrom=${T0 + 3500}&callsTo=${T0 + 5500}`), []);
+    assert.deepEqual(await ids(`from=${T0 + 3500}&to=${T0 + 5500}`), ['S']);
+  } finally {
+    await c.close();
+    home.destroy();
+  }
+});
+
+test('AEGIS-47 the path of a session: the instructions, hooks, skills, permission decisions, subagents and MCP servers it went through, in order', async () => {
+  const home = new Home();
+  const b = (s: number) => ({ sid: 'P', at: T0 + s * 1000 });
+  const att = (s: number, attachment: Record<string, unknown>) => ({ type: 'attachment', uuid: `att-${s}-${attachment.type}`, sessionId: 'P', timestamp: new Date(T0 + s * 1000).toISOString(), cwd: '/work/alpha', attachment });
+  const classifier = { decision: 'accept', source: 'config', reasonType: 'classifier' };
+  home.transcript('-work-alpha', 'P', [
+    att(0, { type: 'instructions', files: [{ path: '/work/alpha/CLAUDE.md', type: 'Project', content: 'TOP-SECRET-RULES' }, { path: '/home/u/.claude/rules/style.md', type: 'User', content: 'x' }] }),
+    att(0, { type: 'skill_listing', skillCount: 12, isInitial: true, names: ['a'], content: 'listing-body' }),
+    rec.hook(b(1), 'hook_success', { event: 'SessionStart', command: 'boot.sh' }),
+    att(1, { type: 'hook_additional_context', hookName: 'SessionStart', hookEvent: 'SessionStart', content: ['ctx-body-123'] }),
+    rec.prompt(b(2), 'please build it'),
+    rec.assistant(b(3), { id: 'm1', content: [rec.toolUse('s1', 'Skill', { skill: 'aegisops-harness:build' })] }),
+    rec.toolResult(b(4), 's1', { perm: { decision: 'accept', source: 'config', reasonType: 'rule', ruleSource: 'userSettings' } }),
+    rec.assistant(b(5), {
+      id: 'm2',
+      content: [rec.toolUse('b1', 'Bash', { command: 'a' }), rec.toolUse('b2', 'Bash', { command: 'b' }), rec.toolUse('b3', 'Read', { file_path: '/x' })],
+      extra: { attributionSkill: 'aegisops-harness:build', attributionPlugin: 'aegisops-harness' },
+    }),
+    rec.toolResult(b(6), 'b1', { perm: classifier }),
+    rec.toolResult(b(7), 'b2', { perm: classifier }),
+    rec.toolResult(b(8), 'b3', { perm: classifier }),
+    rec.hook(b(9), 'hook_non_blocking_error', { event: 'PostToolUse', command: 'python3 gate.py --token=abcdef123456' }),
+    rec.assistant(b(10), { id: 'm3', content: [rec.toolUse('d1', 'Bash', { command: 'rm -rf /' }), rec.toolUse('a1', 'Agent', { subagent_type: 'Explore', description: 'look around' }), rec.toolUse('g1', 'mcp__github__list_issues', {})] }),
+    rec.toolResult(b(11), 'd1', { error: true, denial: 'hook', perm: { decision: 'reject', source: 'hook', reasonType: 'hook', reasonCode: 'hook:PreToolUse' } }),
+    rec.toolResult(b(12), 'a1', { perm: null }),
+    rec.toolResult(b(13), 'g1', { perm: null }),
+    rec.stopSummary(b(14), [{ command: 'stop.py', durationMs: 10 }]),
+    rec.prompt(b(20), 'thanks'),
+    // inside one skill the session enters another, then the first again; a stop hook fails; a call is denied with no decision recorded
+    rec.assistant(b(21), { id: 'm4', content: [rec.toolUse('s2', 'Skill', { skill: 'dataviz' })], extra: { attributionSkill: 'aegisops-harness:build' } }),
+    rec.assistant(b(22), { id: 'm5', content: [rec.toolUse('s3', 'Skill', { skill: 'build' }), rec.toolUse('x9', 'Bash', { command: 'x' })], extra: { attributionSkill: 'dataviz' } }),
+    rec.toolResult(b(23), 'x9', { error: true, denial: 'user-rejected', perm: null }),
+    rec.stopSummary(b(24), [{ command: 'stop.py', durationMs: 10 }, { command: 'other.py', durationMs: 5 }], ['boom']),
+    rec.hook(b(24), 'hook_non_blocking_error', { event: 'Stop', command: 'stop.py' }),
+  ]);
+  home.transcript('-work-alpha', 'P', [rec.prompt({ sid: 'P', at: T0 + 12_000, agentId: 'a1' }, 'look around the repo')], { agent: 'a1' });
+  const c = await start(home);
+  try {
+    const path = await c.get('/api/sessions/P/path');
+    assert.deepEqual(
+      path.steps.map((s: any) => [s.lane, s.title, s.count, s.tone, s.turn]),
+      [
+        ['context', 'CLAUDE.md', 1, 'plain', 0],
+        ['context', 'style.md', 1, 'plain', 0],
+        ['context', '12 skills offered', 1, 'plain', 0],
+        ['hooks', 'SessionStart', 1, 'ok', 0],
+        ['hooks', 'SessionStart', 1, 'plain', 0],
+        ['prompt', 'please build it', 1, 'plain', 1],
+        ['skills', 'aegisops-harness:build', 1, 'plain', 1],
+        ['permissions', 'accept', 1, 'ok', 1],
+        ['permissions', 'accept', 3, 'ok', 1],
+        ['hooks', 'PostToolUse', 1, 'bad', 1],
+        ['agents', 'Explore', 1, 'plain', 1],
+        ['mcp', 'github', 1, 'plain', 1],
+        ['permissions', 'reject', 1, 'stopped', 1],
+        ['hooks', 'Stop', 1, 'ok', 1],
+        ['prompt', 'thanks', 1, 'plain', 2],
+        ['skills', 'aegisops-harness:build', 1, 'plain', 2],
+        ['skills', 'dataviz', 1, 'plain', 2],
+        ['skills', 'aegisops-harness:build', 1, 'plain', 2],
+        ['permissions', 'reject', 1, 'stopped', 2],
+        ['hooks', 'Stop', 1, 'bad', 2],
+        ['hooks', 'Stop', 1, 'ok', 2],
+      ],
+    );
+    const step = (i: number) => path.steps[i];
+    assert.deepEqual([step(0).detail, step(1).detail], ['Project instructions, /work/alpha/CLAUDE.md', 'User instructions, /home/u/.claude/rules/style.md']);
+    assert.equal(step(4).detail, 'added 12 characters of context');
+    assert.deepEqual([step(7).by, step(7).tools], [{ decision: 'accept', source: 'config', reason: 'rule', ruleSource: 'userSettings' }, ['Skill']]);
+    assert.deepEqual([step(8).by.reason, step(8).tools], ['classifier', ['Bash', 'Read']]);
+    assert.deepEqual([step(12).by.source, step(12).tools], ['hook', ['Bash']]);
+    // a run of the same decision is one step that spans its transcript lines
+    assert.ok(step(8).lastLine > step(8).line);
+    // what was loaded or injected is named, never quoted; a secret in a hook command is masked
+    const text = JSON.stringify(path);
+    for (const leak of ['TOP-SECRET-RULES', 'ctx-body-123', 'listing-body', 'abcdef123456']) assert.ok(!text.includes(leak), `${leak} leaked`);
+    assert.deepEqual(path.summary.hooks.map((h: any) => [h.event, h.command.includes('gate.py') || h.command, h.runs, h.failed]), [['SessionStart', 'boot.sh', 1, 0], ['PostToolUse', true, 1, 1], ['Stop', 'stop.py', 2, 1], ['Stop', 'other.py', 1, 0]]);
+    assert.deepEqual(path.summary.skills, [{ name: 'aegisops-harness:build', count: 3 }, { name: 'dataviz', count: 1 }]);
+    assert.deepEqual([step(18).by.reason, step(18).tools], ['user-rejected', ['Bash']]);
+    // in a subagent's own transcript the prompt is the task it was handed
+    assert.equal((await c.get('/api/sessions/P/path?agent=a1')).steps[0].detail, 'the task this subagent was given');
+    assert.deepEqual(path.summary.permissions.map((p: any) => [p.decision, p.source, p.reason, p.count]), [['accept', 'config', 'classifier', 3], ['accept', 'config', 'rule', 1], ['reject', 'hook', 'hook', 1], ['reject', 'config', 'user-rejected', 1]]);
+    assert.deepEqual([path.summary.instructions, path.summary.agents, path.summary.mcp], [2, [{ type: 'Explore', count: 1 }], [{ server: 'github', count: 1 }]]);
+    // paging, and an unknown session
+    const page = await c.get('/api/sessions/P/path?offset=5&limit=2');
+    assert.deepEqual([page.total, page.steps.map((s: any) => s.lane)], [21, ['prompt', 'skills']]);
+    assert.equal((await c.getRes('/api/sessions/nope/path')).status, 404);
+  } finally {
+    await c.close();
+    home.destroy();
+  }
+});
+
+test('AEGIS-48 the files the agent worked on most, across sessions: reads, edits, writes and how many sessions touched each', async () => {
+  const home = new Home();
+  const use = (sid: string, s: number, id: string, name: string, file: string, cwd = '/work/alpha') =>
+    rec.assistant({ sid, cwd, at: T0 + s * 1000 }, { id: `m-${id}`, content: [rec.toolUse(id, name, { file_path: file, content: 'x', old_string: 'a', new_string: 'b' })] });
+  home.transcript('-work-alpha', 'A', [
+    use('A', 0, 'r1', 'Read', '/work/alpha/a.ts'), use('A', 1, 'r2', 'Read', '/work/alpha/a.ts'), use('A', 2, 'e1', 'Edit', '/work/alpha/a.ts'),
+    use('A', 3, 'w1', 'Write', '/work/alpha/b.ts'), use('A', 4, 'r3', 'Read', '/work/alpha/.env.token=abcdef123456'),
+  ]);
+  home.transcript('-work-beta', 'B', [use('B', 86_400 * 3, 'r9', 'Read', '/work/alpha/a.ts', '/work/beta')]);
+  const c = await start(home);
+  try {
+    const heat = await c.get('/api/files/heat');
+    assert.deepEqual(
+      [heat.items[0], heat.items.find((f: any) => f.path.endsWith('b.ts'))].map((f: any) => [f.path, f.read, f.edit, f.write, f.sessions]),
+      [['/work/alpha/a.ts', 3, 1, 0, 2], ['/work/alpha/b.ts', 0, 0, 1, 1]],
+    );
+    assert.deepEqual([heat.files, heat.touches], [3, 6]);
+    assert.ok(!JSON.stringify(heat).includes('abcdef123456'));
+    // one project, a time span, and a cap
+    assert.deepEqual((await c.get('/api/files/heat?project=-work-beta')).items.map((f: any) => [f.path, f.read, f.sessions]), [['/work/alpha/a.ts', 1, 1]]);
+    assert.deepEqual((await c.get(`/api/files/heat?to=${T0 + 60_000}`)).items[0].sessions, 1);
+    assert.equal((await c.get('/api/files/heat?limit=1')).items.length, 1);
+    // by folder, and the files under one folder
+    home.transcript('-work-alpha', 'C', [use('C', 5, 'r20', 'Read', '/work/alpha/src/deep/c.ts'), use('C', 6, 'e20', 'Edit', '/work/alpha/src/deep/d.ts')]);
+    await c.app.index();
+    const folders = await c.get('/api/files/heat?group=folder');
+    assert.deepEqual(folders.items.map((f: any) => [f.path, f.read, f.edit, f.write, f.sessions, f.files]), [['/work/alpha', 4, 1, 1, 2, 3], ['/work/alpha/src/deep', 1, 1, 0, 1, 2]]);
+    // a folder opens exactly the files its tile counted: the ones directly in it
+    const inside = async (dir: string) => (await c.get(`/api/files/heat?under=${encodeURIComponent(dir)}`)).items.map((f: any) => f.path);
+    assert.deepEqual(await inside('/work/alpha/src/deep'), ['/work/alpha/src/deep/c.ts', '/work/alpha/src/deep/d.ts']);
+    assert.deepEqual(await inside('/work/alpha/src'), []);
+    assert.equal((await inside('/work/alpha')).length, 3);
+  } finally {
+    await c.close();
+    home.destroy();
+  }
+});

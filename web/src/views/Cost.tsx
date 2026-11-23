@@ -5,6 +5,7 @@ import { qs, useApi } from '../api';
 import { Columns, Meter, OTHER, SLOTS, type Series } from '../charts';
 import { compact, dayLabel, hourLabel, int, modelName, money, percent, shortPath, tzOffset, when } from '../format';
 import { Empty, Mark, Problem, navigate, setQuery } from '../ui';
+import { MoneyFlow, Plate } from '../visuals';
 
 const GROUPS: Array<[string, string]> = [['model', 'Model'], ['project', 'Project'], ['skill', 'Skill'], ['plugin', 'Plugin'], ['agent', 'Agent type']];
 const RANGES: Array<[string, string]> = [['1', 'Today, by hour'], ['7', '7 days'], ['30', '30 days'], ['90', '90 days']];
@@ -25,6 +26,15 @@ export function Cost({ query }: { query: URLSearchParams }) {
   const series = useApi<any>(`/api/cost/series${qs({ ...range, group, tz: tzOffset() })}`, 'all');
   const top = useApi<any>(`/api/cost/top${qs({ from: range.from, to: range.to, limit: 12, tz: tzOffset() })}`, 'all');
   const projects = useApi<any>('/api/projects');
+  const flow = useApi<any>(`/api/cost/flow${qs({ from: range.from, to: range.to, tz: tzOffset() })}`, 'all');
+  const flowNames = useMemo(
+    () => ({
+      project: (k: string) => shortPath((projects.data?.items ?? []).find((p: any) => p.id === k)?.cwd) || k,
+      model: (k: string) => (k === '(none)' ? 'No model recorded' : modelName(k)),
+      agent: (k: string) => (k === 'main' ? 'Main thread' : k),
+    }),
+    [projects.data],
+  );
   const d = series.data;
   const groupLabel = GROUPS.find((g) => g[0] === group)?.[1] ?? 'Model';
   const name = (key: string) => {
@@ -89,6 +99,14 @@ export function Cost({ query }: { query: URLSearchParams }) {
           <div className="stat"><dt>Tokens out</dt><dd className="num">{compact(t.output)}</dd><small>{compact(t.input)} new tokens in</small></div>
           <div className="stat"><dt>Input from cache</dt><dd className="num">{percent(t.cacheShare)}</dd><small>{compact(t.cacheRead)} read, {compact(t.cacheWrite)} written</small></div>
         </dl>
+      ) : null}
+
+      {flow.data && flow.data.total > 0 ? (
+        <div className="section">
+          <Plate title="Where the money goes" note="Each band is as wide as the spend it carries: from a project, through a model, to the main thread or a kind of subagent.">
+            <MoneyFlow rows={flow.data.rows} names={flowNames} />
+          </Plate>
+        </div>
       ) : null}
 
       <section className="section">

@@ -13,6 +13,9 @@ export type SessionFilter = {
   entrypoint: string | null;
   from: number | null;
   to: number | null;
+  /** Only sessions that got a response in this span (both ends given). */
+  callsFrom: number | null;
+  callsTo: number | null;
   errors: boolean;
   risk: Severity | null;
   ids: string[] | null;
@@ -96,6 +99,10 @@ export function listSessions(db: Db, f: SessionFilter) {
   if (f.to !== null) {
     where.push('s.first_ts <= ?');
     args.push(f.to);
+  }
+  if (f.callsFrom !== null && f.callsTo !== null) {
+    where.push('EXISTS (SELECT 1 FROM api_calls c WHERE c.session_id = s.id AND c.ts >= ? AND c.ts <= ?)');
+    args.push(f.callsFrom, f.callsTo);
   }
   if (f.errors) where.push('(s.tool_errors > 0 OR s.api_errors > 0 OR s.hook_failures > 0)');
   if (f.risk) {
@@ -211,4 +218,48 @@ export function facets(db: Db) {
   const models = (db.prepare('SELECT DISTINCT value AS model FROM sessions, json_each(sessions.models) ORDER BY 1').all() as any[]).map((r) => r.model);
   const entrypoints = (db.prepare('SELECT DISTINCT entrypoint FROM sessions WHERE entrypoint IS NOT NULL ORDER BY 1').all() as any[]).map((r) => r.entrypoint);
   return { models, entrypoints };
+}
+
+/**
+ * Splits a sequence of ranks into at most `bins` equal runs and gives each run one rank: a failure (3) when at
+ * least a tenth of the run failed, so one bad call in hundreds does not paint a long session red; else a prompt (2)
+ * when it holds one; else a tool call (1) when it holds one; else a response (0).
+ */
+export function binRanks(ranks: number[], bins: number): number[] {
+  const count = Math.min(bins, ranks.length);
+  const seen = Array.from({ length: count }, () => [0, 0, 0, 0]);
+  ranks.forEach((r, i) => {
+    seen[Math.min(count - 1, Math.floor((i / ranks.length) * count))][r]++;
+  });
+  return seen.map(([talk, tool, ask, bad]) => (bad > 0 && bad * 10 >= talk + tool + ask + bad ? 3 : ask > 0 ? 2 : tool > 0 ? 1 : 0));
+}
+
+const SHAPE_BINS = 32;
+const shapeCache = new Map<string, { stamp: string; shape: number[] }>();
+
+/**
+ * The shape of a session: everything it did, in order, as a short strip. 0 is a response, 1 a tool call,
+ * 2 a prompt typed into the main thread, 3 a failure (a failed or denied call, an API error, a failed or blocking hook).
+ * A shape is kept until its session's stamp (anything that changes when the session grows) changes.
+ */
+export function sessionShapes(db: Db, sessions: Array<{ id: string; stamp: string }>): Map<string, number[]> {
+  const events = db.prepare(
+    `SELECT ts, 0 AS r FROM api_calls WHERE session_id = ?1
+     UNION ALL SELECT ts, CASE WHEN status IN ('error', 'denied') THEN 3 ELSE 1 END FROM tool_calls WHERE session_id = ?1
+     UNION ALL SELECT p.ts, 2 FROM prompts p JOIN files f ON f.id = p.file_id WHERE p.session_id = ?1 AND f.agent_id IS NULL AND p.origin IN ('human', 'sdk', 'command')
+     UNION ALL SELECT ts, 3 FROM events WHERE session_id = ?1 AND (kind = 'api_error' OR (kind = 'hook' AND status IN ('error', 'blocked')))
+     ORDER BY 1, 2`,
+  );
+  const out = new Map<string, number[]>();
+  for (const { id, stamp } of sessions) {
+    let hit = shapeCache.get(id);
+    if (!hit || hit.stamp !== stamp) {
+      hit = { stamp, shape: binRanks((events.all(id) as Array<{ r: number }>).map((e) => e.r), SHAPE_BINS) };
+      shapeCache.delete(id);
+      shapeCache.set(id, hit);
+      if (shapeCache.size > 2000) shapeCache.delete(shapeCache.keys().next().value!);
+    }
+    out.set(id, hit.shape);
+  }
+  return out;
 }

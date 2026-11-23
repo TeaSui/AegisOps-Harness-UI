@@ -230,3 +230,43 @@ test('AEGIS-30 a hook that fails often is flagged; a clean home passes every che
     empty.destroy();
   }
 });
+
+test('AEGIS-38 the harness map counts prompts, responses, gate decisions, tools by category, MCP servers and subagents in a time span', async () => {
+  const home = opsHome();
+  home.transcript('-work-alpha', 's2', [rec.prompt({ sid: 's2', at: T0 }, 'hello there')]);
+  // the task a subagent is given is a prompt in its own transcript, and is not one of yours
+  home.transcript('-work-alpha', 'ops', [rec.prompt({ sid: 'ops', at: T0 + 39_000, agentId: 'a1' }, 'explore the repo'), rec.assistant({ sid: 'ops', at: T0 + 40_000, agentId: 'a1' }, { id: 'm2' })], { agent: 'a1', agentType: 'Explore' });
+  const c = await start(home, { now: () => T0 + 2 * DAY });
+  try {
+    const map = await c.get('/api/map');
+    assert.equal(map.prompts, 1);
+    assert.equal(map.sessions, 2);
+    assert.equal(map.api.calls, 2);
+    assert.equal(map.models.reduce((n: number, m: any) => n + m.calls, 0), 2);
+    assert.deepEqual([map.api.errors, map.api.rateLimits, map.api.compactions], [3, 2, 1]);
+    assert.deepEqual(map.gate, { hookCommands: 3, hookRuns: 10, hookFailures: 2, hookBlocks: 1, denied: 1 });
+    const cat = (name: string) => {
+      const t = map.tools.find((x: any) => x.category === name);
+      return [t.calls, t.errors, t.denied, t.pending, t.errorRate, t.p50];
+    };
+    assert.deepEqual(cat('exec'), [5, 1, 1, 1, 0.25, 1000]);
+    assert.deepEqual(cat('read'), [1, 0, 0, 0, 0, 1000]);
+    assert.deepEqual(cat('mcp').slice(0, 2), [3, 1]);
+    assert.deepEqual(cat('write'), [0, 0, 0, 0, 0, null]);
+    assert.deepEqual(map.tools.map((t: any) => t.category), ['exec', 'read', 'write', 'fetch', 'agent', 'mcp', 'other']);
+    assert.deepEqual(map.tools.find((t: any) => t.category === 'exec').top, [{ tool: 'Bash', calls: 5 }]);
+    assert.deepEqual(map.servers.map((s: any) => [s.server, s.calls, s.errors]), [['github', 2, 1], ['plugin_ops_atlassian', 1, 0]]);
+    assert.deepEqual([map.subagents.spawned, map.subagents.types, map.subagents.calls], [1, [{ type: 'Explore', n: 1 }], 1]);
+    // a span narrows every count
+    const later = await c.get(`/api/map?from=${T0 + DAY}`);
+    assert.deepEqual([later.prompts, later.api.calls, later.api.errors, later.gate.hookRuns, later.tools[0].calls, later.subagents.spawned], [0, 0, 1, 0, 0, 0]);
+    // a subagent belongs to the span it started in, and `to` closes the span
+    assert.equal((await c.get(`/api/map?from=${T0 + 39_500}`)).subagents.spawned, 0);
+    assert.deepEqual([(await c.get(`/api/map?to=${T0 + 20_000}`)).tools[0].calls, (await c.get(`/api/map?to=${T0 + 19_000}`)).tools[0].calls], [5, 0]);
+    // the map is read like every other route: not without the session cookie
+    assert.equal((await fetch(`${c.origin}/api/map`)).status, 401);
+  } finally {
+    await c.close();
+    home.destroy();
+  }
+});

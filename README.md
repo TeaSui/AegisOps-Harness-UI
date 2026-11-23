@@ -12,11 +12,11 @@ Aegis needs Node 22.18 or newer and nothing else at run time. It reads `~/.claud
 
 | View | Answers |
 |---|---|
-| **Now** | What is running, and which session needs me (a question, a pending tool, a blocking hook, a rate limit, a risky action, a changed transcript)? |
-| **Sessions** | Every session, searchable by what was said or run. Each opens as a tape: prompts, replies and tool calls in order, every call paired with its result, duration, outcome and how it was allowed. |
-| **Audit** | A ledger of every command, file write, fetch, MCP call and subagent dispatch; risk findings with triage; tamper evidence; CSV and JSON Lines export; a log of what was done through the console. |
-| **Cost** | Spend and tokens by model, project, skill, plugin or agent type, with the share of input served from cache. |
-| **Ops** | Reliability of hooks, tools, MCP servers and the API; the configuration as it is on disk; doctor checks. |
+| **Now** | The harness drawn as a machine with its real traffic (you, the sessions, the models, the gate of permissions and hooks, the tools), which session needs me, and every running session on a board. |
+| **Sessions** | Every session, searchable by what was said or run, under a calendar of spend per day; each row carries the shape of its session (prompts, tool calls, failures, in order). Each opens as a replay (step through it and watch which part of the harness every row touched, with running cost and context), as its path (the instruction files, hooks, skills, permission decisions, subagents and MCP servers it went through, in order) or as a tape: prompts, replies and tool calls in order, every call paired with its result, duration, outcome and how it was allowed. |
+| **Audit** | Findings drawn day by day; a map of the folders and files the agent read and changed most; a ledger of every command, file write, fetch, MCP call and subagent dispatch; risk findings with triage; tamper evidence; CSV and JSON Lines export; a log of what was done through the console. |
+| **Cost** | Spend flowing from projects through models to the main thread and each kind of subagent; spend and tokens by model, project, skill, plugin or agent type, with the share of input served from cache. |
+| **Ops** | Hook events drawn as gates along the life of a session, with what did not pass at each; reliability of hooks, tools, MCP servers and the API; the configuration as it is on disk; doctor checks. |
 | **Run** | Launch and stop headless runs. Off unless started with `npm run start:control`. |
 
 Keyboard: `Ctrl K` palette and search, `g` then `n s a c o r` to jump, `/` to filter, `j` `k` `Enter` over rows, `Esc` to close.

@@ -4,6 +4,8 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { get, onPush, qs, useApi } from '../api';
 import { LineChart } from '../charts';
 import { allowedBy, clock, compact, duration, fullTime, int, modelName, money, percent, shortPath, when } from '../format';
+import { Replay, promptText } from './Replay';
+import { Path } from './Path';
 import { Empty, Icon, Link, Mark, Outcome, Pill, Problem, Severity, Source, copyText, setQuery, useToast } from '../ui';
 
 const PAGE = 1000;
@@ -61,15 +63,6 @@ function useTimeline(id: string, agent: string | null) {
   return state.key === key ? state : { key, items: [], total: 0, file: null, error: null, loading: true };
 }
 
-/** A slash command is recorded as tags; show it the way it was typed. */
-function promptText(item: Item): string {
-  if (item.origin !== 'command') return item.text;
-  const name = /<command-name>([^<]*)<\/command-name>/.exec(item.text)?.[1]?.trim();
-  if (!name) return item.text;
-  const args = /<command-args>([\s\S]*?)<\/command-args>/.exec(item.text)?.[1]?.trim() ?? '';
-  return `${name.startsWith('/') ? name : `/${name}`}${args ? ` ${args}` : ''}`;
-}
-
 const ORIGIN: Record<string, string> = {
   human: 'You',
   sdk: 'Prompt from the SDK',
@@ -96,8 +89,8 @@ function Expandable({ text, truncated, file, line, mono }: { text: string; trunc
   );
 }
 
-const Row = memo(function Row({ item, showTime, findings, sessionId }: { item: Item; showTime: boolean; findings: any[] | undefined; sessionId: string }) {
-  const [open, setOpen] = useState(false);
+const Row = memo(function Row({ item, showTime, findings, sessionId, bare, defaultOpen }: { item: Item; showTime: boolean; findings: any[] | undefined; sessionId: string; bare?: boolean; defaultOpen?: boolean }) {
+  const [open, setOpen] = useState(!!defaultOpen);
   let cls = item.kind;
   let body: React.ReactNode = null;
   switch (item.kind) {
@@ -166,7 +159,7 @@ const Row = memo(function Row({ item, showTime, findings, sessionId }: { item: I
                 {item.denialKind ? <span className="tag">{item.denialKind}</span> : null}
                 {item.skill ? <span className="tag" title="The skill that was active">{item.skill}</span> : null}
                 <span className="spacer" />
-                {item.subagent ? <Link to={`/sessions/${encodeURIComponent(sessionId)}${qs({ agent: item.subagent })}`}>Open the subagent's tape</Link> : null}
+                {item.subagent ? <Link to={`/sessions/${encodeURIComponent(sessionId)}${qs({ agent: item.subagent, view: 'tape' })}`}>Open the subagent's tape</Link> : null}
                 <span>call <Source file={item.file} line={item.line} /></span>
                 {item.result ? <span>result <Source file={item.file} line={item.result.line} /></span> : null}
               </div>
@@ -261,6 +254,7 @@ const Row = memo(function Row({ item, showTime, findings, sessionId }: { item: I
     default:
       return null;
   }
+  if (bare) return <>{body}</>;
   return (
     <div className={`row ${cls}`}>
       <div className="time" title={fullTime(item.ts)}>{showTime ? clock(item.ts) : ''}</div>
@@ -280,6 +274,8 @@ const FILTERS: Array<[string, string, (i: Item, flagged: boolean) => boolean]> =
 export function Session({ id, query }: { id: string; query: URLSearchParams }) {
   const agent = query.get('agent');
   const show = query.get('show') ?? 'all';
+  // a link that asks for a filtered tape gets the tape
+  const mode = query.get('view') === 'tape' || query.get('show') ? 'tape' : query.get('view') === 'path' ? 'path' : 'replay';
   const session = useApi<any>(`/api/sessions/${encodeURIComponent(id)}`, (ids) => ids.includes(id));
   const timeline = useTimeline(id, agent);
   const context = useApi<any>(`/api/sessions/${encodeURIComponent(id)}/context${qs({ agent })}`, (ids) => ids.includes(id));
@@ -331,100 +327,8 @@ export function Session({ id, query }: { id: string; query: URLSearchParams }) {
   const peak = Math.max(0, ...(context.data?.calls ?? []).map((c: any) => c.context));
   const cacheShare = s ? (s.usage.input + s.usage.cacheRead + s.usage.cacheWrite5m + s.usage.cacheWrite1h > 0 ? s.usage.cacheRead / (s.usage.input + s.usage.cacheRead + s.usage.cacheWrite5m + s.usage.cacheWrite1h) : null) : null;
   let lastClock = '';
-  return (
-    <div className="page">
-      <div className="page-head">
-        <div style={{ minWidth: 0, flex: '1 1 480px' }}>
-          <div className="muted" style={{ marginBottom: 4 }}><Link to="/sessions">Sessions</Link> / {s ? shortPath(s.cwd) || s.project : ''}</div>
-          <h1 style={{ overflowWrap: 'anywhere' }}>{s?.title ?? 'Loading the session'}</h1>
-          {s ? (
-            <p className="lede">
-              {s.live ? <Pill tone="info" icon={null}>running</Pill> : null} {when(s.firstTs)} to {when(s.lastTs)}, {duration(s.durationMs)}
-              {s.gitBranch ? `, branch ${s.gitBranch}` : ''}{s.entrypoint ? `, started from ${s.entrypoint}` : ''}
-            </p>
-          ) : null}
-        </div>
-        {s?.resumeCommand ? (
-          <button className="btn" title="Interactive work stays in the terminal" onClick={() => copyText(s.resumeCommand, toast, 'Resume command copied')}>
-            <Icon name="copy" size={15} />Copy resume command
-          </button>
-        ) : null}
-      </div>
-      {s?.sourceRemoved ? <div className="banner warn"><Mark tone="warn">A transcript of this session is no longer on disk. The figures remain; its tape and raw records cannot be read.</Mark></div> : null}
-      {s && !s.hasMain ? <div className="banner info"><Mark tone="info">This session has subagent transcripts but no main transcript.</Mark></div> : null}
-
-      {s ? (
-        <dl className="stats">
-          <div className="stat">
-            <dt>Cost</dt>
-            <dd className="num">{money(s.cost.estimated)}</dd>
-            <small title={s.cost.reportedBasis}>
-              {s.cost.reported !== null ? `harness reported ${money(s.cost.reported)} over ${s.cost.reportedRuns} run${s.cost.reportedRuns === 1 ? '' : 's'}` : s.cost.basis}
-              {s.cost.unpricedCalls ? `, ${s.cost.unpricedCalls} unpriced` : ''}
-            </small>
-          </div>
-          <div className="stat">
-            <dt>Responses</dt>
-            <dd className="num">{int(s.apiCalls)}</dd>
-            <small>{compact(s.usage.output)} tokens out, {percent(cacheShare)} of input from cache</small>
-          </div>
-          <div className="stat">
-            <dt>Tool calls</dt>
-            <dd className="num">{int(s.toolCalls)}</dd>
-            <small>{s.toolErrors} failed, {s.toolDenied} denied</small>
-          </div>
-          <div className="stat">
-            <dt>Peak context</dt>
-            <dd className="num">{compact(peak)}</dd>
-            <small>{s.compactions} compaction{s.compactions === 1 ? '' : 's'}</small>
-          </div>
-          <div className="stat">
-            <dt>Risk</dt>
-            <dd style={{ fontSize: 15, paddingTop: 5 }}>{s.risk ? <Severity level={s.risk} /> : <Mark tone="good">no findings</Mark>}</dd>
-            <small>{s.findings ? <Link to={`/audit${qs({ session: id })}`}>{s.openFindings} open of {s.findings}</Link> : 'nothing matched a risk rule'}</small>
-          </div>
-        </dl>
-      ) : null}
-
-      <div className="session-grid section">
-        <div style={{ minWidth: 0 }}>
-          <div className="filters">
-            <div className="seg">
-              {FILTERS.map(([key, label]) => (
-                <button key={key} aria-pressed={show === key} onClick={() => setQuery({ show: key === 'all' ? null : key })}>{label}</button>
-              ))}
-            </div>
-            <input data-filter className="field grow" type="search" value={text} onChange={(e) => setText(e.target.value)} placeholder="Filter this tape   /" aria-label="Filter the tape" />
-            {agents.length > 1 ? (
-              <select className="field" value={agent ?? ''} onChange={(e) => setQuery({ agent: e.target.value || null })} aria-label="Agent">
-                {agents.map((a) => (
-                  <option key={a.file} value={a.agentId ?? ''}>{a.agentId === null ? 'Main thread' : `${a.agentType} ${a.agentId.slice(0, 7)}`}</option>
-                ))}
-              </select>
-            ) : null}
-          </div>
-          <Problem error={timeline.error} />
-          {agent && current ? <div className="banner info"><Mark tone="info">Tape of the {current.agentType} subagent.</Mark><span style={{ flex: 1 }} /><button className="linkish" onClick={() => setQuery({ agent: null })}>Back to the main thread</button></div> : null}
-          <div className="tape">
-            {visible.map((item) => {
-              const c = clock(item.ts);
-              const showTime = c !== lastClock;
-              lastClock = c;
-              return <Row key={item.seq} item={item} showTime={showTime} findings={item.kind === 'tool' ? byTool.get(item.id) : undefined} sessionId={id} />;
-            })}
-          </div>
-          {timeline.loading ? (
-            <div className="tape-end">Reading the transcript… {int(timeline.items.length)} of {int(timeline.total)} rows</div>
-          ) : visible.length === 0 ? (
-            <Empty title={timeline.items.length ? 'Nothing on this tape matches the filter' : 'This transcript has no conversation yet'} />
-          ) : (
-            <div className="tape-end">
-              {int(visible.length)} of {int(timeline.total)} rows{timeline.total > timeline.items.length ? `. The first ${int(timeline.items.length)} are loaded.` : '.'}{s?.live ? ' New rows appear as the session writes them.' : ''}
-            </div>
-          )}
-        </div>
-
-        <aside className="side">
+  const sidePanels = (
+    <>
           <div className="panel pad">
             <h3 style={{ marginBottom: 8 }}>Context size per response</h3>
             {points.length ? <LineChart points={points} markers={markers} format={compact} height={150} /> : <span className="muted">No response recorded{agent ? ' for this agent' : ''}.</span>}
@@ -480,8 +384,140 @@ export function Session({ id, query }: { id: string; query: URLSearchParams }) {
               </div>
             </div>
           ) : null}
-        </aside>
+    </>
+  );
+  return (
+    <div className="page">
+      <div className="page-head">
+        <div style={{ minWidth: 0, flex: '1 1 480px' }}>
+          <div className="muted" style={{ marginBottom: 4 }}><Link to="/sessions">Sessions</Link> / {s ? shortPath(s.cwd) || s.project : ''}</div>
+          <h1 style={{ overflowWrap: 'anywhere' }}>{s?.title ?? 'Loading the session'}</h1>
+          {s ? (
+            <p className="lede">
+              {s.live ? <Pill tone="info" icon={null}>running</Pill> : null} {when(s.firstTs)} to {when(s.lastTs)}, {duration(s.durationMs)}
+              {s.gitBranch ? `, branch ${s.gitBranch}` : ''}{s.entrypoint ? `, started from ${s.entrypoint}` : ''}
+              {mode !== 'tape' ? (
+                <>
+                  . <b className="num">{money(s.cost.estimated)}</b> in {int(s.apiCalls)} responses and {int(s.toolCalls)} tool calls
+                  {s.findings ? <>, <Link to={`/audit${qs({ session: id })}`}>{s.openFindings} open of {s.findings} findings</Link></> : null}.
+                </>
+              ) : null}
+            </p>
+          ) : null}
+        </div>
+        {s?.resumeCommand ? (
+          <button className="btn" title="Interactive work stays in the terminal" onClick={() => copyText(s.resumeCommand, toast, 'Resume command copied')}>
+            <Icon name="copy" size={15} />Copy resume command
+          </button>
+        ) : null}
       </div>
+      {s?.sourceRemoved ? <div className="banner warn"><Mark tone="warn">A transcript of this session is no longer on disk. The figures remain; its tape and raw records cannot be read.</Mark></div> : null}
+      {s && !s.hasMain ? <div className="banner info"><Mark tone="info">This session has subagent transcripts but no main transcript.</Mark></div> : null}
+
+      {s && mode === 'tape' ? (
+        <dl className="stats">
+          <div className="stat">
+            <dt>Cost</dt>
+            <dd className="num">{money(s.cost.estimated)}</dd>
+            <small title={s.cost.reportedBasis}>
+              {s.cost.reported !== null ? `harness reported ${money(s.cost.reported)} over ${s.cost.reportedRuns} run${s.cost.reportedRuns === 1 ? '' : 's'}` : s.cost.basis}
+              {s.cost.unpricedCalls ? `, ${s.cost.unpricedCalls} unpriced` : ''}
+            </small>
+          </div>
+          <div className="stat">
+            <dt>Responses</dt>
+            <dd className="num">{int(s.apiCalls)}</dd>
+            <small>{compact(s.usage.output)} tokens out, {percent(cacheShare)} of input from cache</small>
+          </div>
+          <div className="stat">
+            <dt>Tool calls</dt>
+            <dd className="num">{int(s.toolCalls)}</dd>
+            <small>{s.toolErrors} failed, {s.toolDenied} denied</small>
+          </div>
+          <div className="stat">
+            <dt>Peak context</dt>
+            <dd className="num">{compact(peak)}</dd>
+            <small>{s.compactions} compaction{s.compactions === 1 ? '' : 's'}</small>
+          </div>
+          <div className="stat">
+            <dt>Risk</dt>
+            <dd style={{ fontSize: 15, paddingTop: 5 }}>{s.risk ? <Severity level={s.risk} /> : <Mark tone="good">no findings</Mark>}</dd>
+            <small>{s.findings ? <Link to={`/audit${qs({ session: id })}`}>{s.openFindings} open of {s.findings}</Link> : 'nothing matched a risk rule'}</small>
+          </div>
+        </dl>
+      ) : null}
+
+      <div className="filters section">
+        <div className="seg" role="group" aria-label="How to read this session">
+          <button aria-pressed={mode === 'replay'} onClick={() => setQuery({ view: null, show: null })}><Icon name="replay" size={14} />Replay</button>
+          <button aria-pressed={mode === 'path'} onClick={() => setQuery({ view: 'path', show: null })} title="The hooks, skills, instructions and permission decisions this session went through"><Icon name="ops" size={14} />Path</button>
+          <button aria-pressed={mode === 'tape'} onClick={() => setQuery({ view: 'tape' })}><Icon name="sessions" size={14} />Tape</button>
+        </div>
+        {agents.length > 1 ? (
+          <select className="field" value={agent ?? ''} onChange={(e) => setQuery({ agent: e.target.value || null, step: null })} aria-label="Agent">
+            {agents.map((a) => (
+              <option key={a.file} value={a.agentId ?? ''}>{a.agentId === null ? 'Main thread' : `${a.agentType} ${a.agentId.slice(0, 7)}`}</option>
+            ))}
+          </select>
+        ) : null}
+        {mode === 'tape' ? (
+          <>
+            <div className="seg">
+              {FILTERS.map(([key, label]) => (
+                <button key={key} aria-pressed={show === key} onClick={() => setQuery({ show: key === 'all' ? null : key })}>{label}</button>
+              ))}
+            </div>
+            <input data-filter className="field grow" type="search" value={text} onChange={(e) => setText(e.target.value)} placeholder="Filter this tape   /" aria-label="Filter the tape" />
+          </>
+        ) : (
+          <span className="muted">{mode === 'path' ? 'Which instructions, hooks, skills and permission decisions this session went through, in order.' : 'Step through the session and watch which part of the harness each row touched.'}</span>
+        )}
+      </div>
+      <Problem error={timeline.error} />
+      {agent && current ? <div className="banner info"><Mark tone="info">This is the {current.agentType} subagent.</Mark><span style={{ flex: 1 }} /><button className="linkish" onClick={() => setQuery({ agent: null, step: null })}>Back to the main thread</button></div> : null}
+      {mode === 'path' ? (
+        <>
+          <Path id={id} agent={agent} />
+          <div className="side-row section">{sidePanels}</div>
+        </>
+      ) : mode === 'replay' ? (
+        <>
+          <Replay
+            key={`${id}|${agent ?? ''}`}
+            items={timeline.items}
+            calls={context.data?.calls ?? []}
+            loading={timeline.loading}
+            total={timeline.total}
+            models={s?.models ?? []}
+            subagent={!!agent}
+            renderStep={(item) => <Row key={item.seq} item={item} showTime={false} findings={item.kind === 'tool' ? byTool.get(item.id) : undefined} sessionId={id} bare defaultOpen />}
+          />
+          <div className="side-row section">{sidePanels}</div>
+        </>
+      ) : (
+        <div className="session-grid">
+          <div style={{ minWidth: 0 }}>
+            <div className="tape">
+              {visible.map((item) => {
+                const c = clock(item.ts);
+                const showTime = c !== lastClock;
+                lastClock = c;
+                return <Row key={item.seq} item={item} showTime={showTime} findings={item.kind === 'tool' ? byTool.get(item.id) : undefined} sessionId={id} />;
+              })}
+            </div>
+            {timeline.loading ? (
+              <div className="tape-end">Reading the transcript… {int(timeline.items.length)} of {int(timeline.total)} rows</div>
+            ) : visible.length === 0 ? (
+              <Empty title={timeline.items.length ? 'Nothing on this tape matches the filter' : 'This transcript has no conversation yet'} />
+            ) : (
+              <div className="tape-end">
+                {int(visible.length)} of {int(timeline.total)} rows{timeline.total > timeline.items.length ? `. The first ${int(timeline.items.length)} are loaded.` : '.'}{s?.live ? ' New rows appear as the session writes them.' : ''}
+              </div>
+            )}
+          </div>
+          <aside className="side">{sidePanels}</aside>
+        </div>
+      )}
     </div>
   );
 }

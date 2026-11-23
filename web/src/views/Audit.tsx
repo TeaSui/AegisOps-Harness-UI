@@ -3,11 +3,13 @@
 import { useEffect, useState } from 'react';
 import { post, qs, useApi } from '../api';
 import { allowedByText, duration, fullTime, int, shortPath, when } from '../format';
+import { Plate, RiskTimeline, Treemap, heatKind } from '../visuals';
 import { Empty, Icon, Link, Mark, Outcome, Pill, Problem, Severity, Source, navigate, setQuery, useToast } from '../ui';
 
 const TABS = [
   ['findings', 'Risk findings'],
   ['ledger', 'Ledger'],
+  ['files', 'Files'],
   ['integrity', 'Integrity'],
   ['activity', 'Console activity'],
 ];
@@ -73,6 +75,12 @@ function Findings({ query }: { query: URLSearchParams }) {
   const offset = Number(query.get('offset') ?? 0) || 0;
   const list = useApi<any>(`/api/audit/findings${qs({ ...params, state: stateParam, limit: 100, offset })}`, 'all');
   const [open, setOpen] = useState<string | null>(null);
+  const every = useApi<any>(`/api/audit/findings${qs({ session: params.session, project: params.project, limit: 1000 })}`, 'all');
+  const [now] = useState(() => Date.now());
+  // as far back as the oldest finding, between 60 and 90 days
+  const oldest = Math.min(now, ...(every.data?.items ?? []).map((f: any) => f.ts as number));
+  const riskDays = Math.max(60, Math.min(90, Math.ceil((now - oldest) / 86_400_000) + 2));
+  const inWindow = (every.data?.items ?? []).filter((f: any) => f.ts >= now - riskDays * 86_400_000).length;
   const items: any[] = list.data?.items ?? [];
   const summary: any[] = list.data?.summary ?? [];
   const count = (sev: string, key: 'open' | 'total') => summary.find((s) => s.severity === sev)?.[key] ?? 0;
@@ -88,6 +96,23 @@ function Findings({ query }: { query: URLSearchParams }) {
           </div>
         ))}
       </dl>
+      {inWindow ? (
+        <Plate
+          title="When it happened"
+          note={`One square per finding over the last ${riskDays} days (${int(inWindow)} of ${int(every.data?.total ?? inWindow)} findings), the worst at the bottom. A square opens the findings of its session.`}
+          aside={
+            <span className="risk-key" aria-hidden="true">
+              <span><i style={{ background: 'var(--critical)', borderColor: 'var(--critical)' }} />critical</span>
+              <span><i style={{ background: 'var(--serious-mark)', borderColor: 'var(--serious-mark)' }} />high</span>
+              <span><i style={{ background: 'var(--warn-mark)', borderColor: 'var(--warn-mark)' }} />medium</span>
+              <span><i style={{ background: 'var(--ink-3)', borderColor: 'var(--ink-3)' }} />low</span>
+              <span><i style={{ borderColor: 'var(--ink-3)' }} />acknowledged</span>
+            </span>
+          }
+        >
+          <RiskTimeline dots={every.data.items} days={riskDays} now={now} onPick={(d) => setQuery({ session: d.session, state: 'all', offset: null })} />
+        </Plate>
+      ) : null}
       <div className="filters">
         <div className="seg">
           {[['open', 'Open'], ['acknowledged', 'Acknowledged'], ['all', 'All']].map(([v, label]) => (
@@ -254,6 +279,78 @@ function Ledger({ query }: { query: URLSearchParams }) {
   );
 }
 
+const HEAT_KIND: Record<string, string> = { read: 'only read', mixed: 'read, sometimes changed', changed: 'mostly changed' };
+
+/** Where the agent worked: the files it touched most, across the sessions of a span. */
+function Files({ query }: { query: URLSearchParams }) {
+  const days = ['7', '30', '90', 'all'].includes(query.get('days') ?? '') ? query.get('days')! : '30';
+  const [anchor] = useState(() => Date.now());
+  const project = query.get('project');
+  const under = query.get('under');
+  // folders first: a folder says what part of a codebase was worked on; a folder then opens its files
+  const folders = !under && query.get('by') !== 'file';
+  const heat = useApi<any>(`/api/files/heat${qs({ from: days === 'all' ? null : anchor - Number(days) * 86_400_000, project, under, group: folders ? 'folder' : null, limit: folders ? 70 : 110 })}`, 'all');
+  const projects = useApi<any>('/api/projects');
+  const items: any[] = heat.data?.items ?? [];
+  const root = project ? (projects.data?.items ?? []).find((p: any) => p.id === project)?.cwd : null;
+  const short = (p: string) => (root && p.startsWith(root + '/') ? p.slice(root.length + 1) : shortPath(p) || p);
+  const open = (f: any) => (folders ? setQuery({ under: f.path }) : navigate(`/sessions${qs({ q: f.path.slice(f.path.lastIndexOf('/') + 1), project })}`));
+  return (
+    <>
+      <div className="filters">
+        <div className="seg" role="group" aria-label="Range">
+          {[['7', '7 days'], ['30', '30 days'], ['90', '90 days'], ['all', 'All time']].map(([v, label]) => (
+            <button key={v} aria-pressed={days === v} onClick={() => setQuery({ days: v === '30' ? null : v })}>{label}</button>
+          ))}
+        </div>
+        <div className="seg" role="group" aria-label="Tiles">
+          <button aria-pressed={folders} onClick={() => setQuery({ by: null, under: null })}>Folders</button>
+          <button aria-pressed={!folders} onClick={() => setQuery({ by: 'file' })}>Files</button>
+        </div>
+        {under ? <button className="btn small" title={under} onClick={() => setQuery({ under: null })}>Under {short(under)}<Icon name="close" size={13} /></button> : null}
+        <select data-filter className="field" value={project ?? ''} onChange={(e) => setQuery({ project: e.target.value || null, under: null })} aria-label="Project" style={{ maxWidth: 320 }}>
+          <option value="">All projects</option>
+          {(projects.data?.items ?? []).map((p: any) => <option key={p.id} value={p.id}>{shortPath(p.cwd) || p.id}</option>)}
+        </select>
+      </div>
+      <Problem error={heat.error} />
+      {items.length === 0 && !heat.loading ? (
+        <div className="panel"><Empty title="No file was read or changed in this range">Reads, edits and writes made through the harness's file tools show here.</Empty></div>
+      ) : (
+        <>
+          <Plate
+            title="Where the agent worked"
+            note={heat.data ? `The ${int(items.length)} most-touched of ${int(heat.data.groups)} ${folders ? 'folders' : 'files'} (${int(heat.data.files)} files in all), sized by every read, edit and write of the sessions active in this range.${heat.data.truncated ? ' Only the most recent 200,000 touches were counted.' : ''} ${folders ? 'A tile opens the files of its folder.' : 'A tile searches the sessions that touched the file.'}` : undefined}
+            aside={
+              <span className="risk-key" aria-hidden="true">
+                <span><i style={{ background: 'color-mix(in srgb, var(--s3) 38%, var(--surface))', borderColor: 'var(--ink-3)' }} />only read</span>
+                <span><i style={{ background: 'color-mix(in srgb, var(--s1) 42%, var(--surface))', borderColor: 'var(--ink-3)' }} />read, sometimes changed</span>
+                <span><i style={{ background: 'color-mix(in srgb, var(--s2) 48%, var(--surface))', borderColor: 'var(--ink-3)' }} />mostly changed</span>
+              </span>
+            }
+          >
+            <div className="flow-wrap"><Treemap items={items} folders={folders} onPick={open} /></div>
+          </Plate>
+          <div className="panel table-wrap">
+            <table>
+              <thead><tr><th>{folders ? 'Folder' : 'File'}</th><th>Kind of work</th><th className="r">Read</th><th className="r">Edited</th><th className="r">Written</th><th className="r">Sessions</th></tr></thead>
+              <tbody>
+                {items.slice(0, 60).map((f) => (
+                  <tr key={f.path} data-row onClick={() => open(f)}>
+                    <td className="mono" style={{ overflowWrap: 'anywhere' }} title={f.path}>{short(f.path)}</td>
+                    <td className="soft nowrap">{HEAT_KIND[heatKind(f)]}</td>
+                    <td className="r">{f.read || ''}</td><td className="r">{f.edit || ''}</td><td className="r">{f.write || ''}</td><td className="r">{f.sessions}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
 function Integrity() {
   const data = useApi<any>('/api/audit/integrity', 'all');
   const [busy, setBusy] = useState(false);
@@ -387,7 +484,7 @@ export function Audit({ tab, query }: { tab: string; query: URLSearchParams }) {
           </Link>
         ))}
       </nav>
-      {tab === 'findings' ? <Findings query={query} /> : tab === 'ledger' ? <Ledger query={query} /> : tab === 'integrity' ? <Integrity /> : tab === 'activity' ? <Activity /> : <Empty title="No such section" />}
+      {tab === 'findings' ? <Findings query={query} /> : tab === 'ledger' ? <Ledger query={query} /> : tab === 'files' ? <Files query={query} /> : tab === 'integrity' ? <Integrity /> : tab === 'activity' ? <Activity /> : <Empty title="No such section" />}
     </div>
   );
 }

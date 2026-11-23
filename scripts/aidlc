@@ -1,6 +1,6 @@
 #!/bin/sh
-# Lifecycle CLI of the AegisOps-Harness plugin (formerly tea-sdlc). Set AEGISOPS_HARNESS_ROOT to override.
-for root in "$AEGISOPS_HARNESS_ROOT" "$HOME/.claude/plugins/marketplaces/aegisops-harness" "$HOME/.claude/plugins/marketplaces/tea-sdlc"; do
+# Lifecycle CLI of the AegisOps-Harness plugin. Set AEGISOPS_HARNESS_ROOT to override.
+for root in "$AEGISOPS_HARNESS_ROOT" "$HOME/.claude/plugins/marketplaces/aegisops-harness"; do
   if [ -n "$root" ] && [ -f "$root/scripts/aidlc.py" ]; then exec python3 "$root/scripts/aidlc.py" "$@"; fi
 done
 echo "aidlc: the AegisOps-Harness plugin was not found; set AEGISOPS_HARNESS_ROOT" >&2

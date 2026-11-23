@@ -80,12 +80,41 @@ const PATHS: Record<string, ReactNode> = {
   theme: <><path d="M20 14.500A8 8 0 1 1 9.500 4a6.500 6.500 0 0 0 10.500 10.500z" /></>,
   down: <><path d="M12 4v12M7 11l5 5 5-5M5 20h14" /></>,
   chevron: <><path d="m9 6 6 6-6 6" /></>,
+  back: <><path d="m14 6-6 6 6 6" /></>,
+  fwd: <><path d="m10 6 6 6-6 6" /></>,
+  skipBack: <><path d="m18 6-7 6 7 6M7 6v12" /></>,
+  skipFwd: <><path d="m6 6 7 6-7 6M17 6v12" /></>,
+  bell: <><path d="M6 16V11a6 6 0 0 1 12 0v5l1.500 2h-15z" /><path d="M10 20a2 2 0 0 0 4 0" /></>,
+  bellOff: <><path d="M6 16V11a6 6 0 0 1 9-5.200M18 11v5l1.500 2H8" /><path d="M10 20a2 2 0 0 0 4 0M4 4l16 16" /></>,
+  swap: <><path d="M4 8h13l-3.500-3.500M20 16H7l3.500 3.500" /></>,
+  pause: <><path d="M8 5v14M16 5v14" /></>,
+  replay: <><path d="M4 12a8 8 0 1 0 2.600-5.900" /><path d="M4 4v5h5" /></>,
 };
 
 export function Icon({ name, size }: { name: string; size?: number }) {
   return (
-    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <svg viewBox="0 0 24 24" width={size} height={size} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       {PATHS[name] ?? PATHS.info}
+    </svg>
+  );
+}
+
+const tint = (v: string) => `color-mix(in srgb, var(${v}) 58%, var(--surface))`;
+
+// The six views: an ink outline with one flat colour each, so the rail reads by colour as well as by shape.
+const VIEW_ICONS: Record<string, ReactNode> = {
+  now: <><circle cx="12" cy="12" r="8.500" fill={tint('--s8')} /><circle cx="12" cy="12" r="2.600" fill="var(--ink)" stroke="none" /><path d="M12 1.800v3M12 19.200v3M1.800 12h3M19.200 12h3" /></>,
+  sessions: <><path d="M3 7.500a2 2 0 0 1 2-2h4.200l2 2.200H19a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" fill={tint('--s4')} /><path d="M7 12.500h10M7 15.500h6" /></>,
+  audit: <><path d="M12 2.800 4.800 5.800v5.400c0 4.400 2.900 7.900 7.200 9.900 4.300-2 7.200-5.500 7.200-9.900V5.800z" fill={tint('--s6')} /><path d="m8.800 12 2.300 2.300 4.200-4.600" /></>,
+  cost: <><rect x="3.500" y="11" width="4.500" height="9" rx="1" fill={tint('--s1')} /><rect x="9.750" y="4" width="4.500" height="16" rx="1" fill={tint('--s1')} /><rect x="16" y="8" width="4.500" height="12" rx="1" fill={tint('--s1')} /></>,
+  ops: <><rect x="2.800" y="4.500" width="18.400" height="15" rx="3" fill={tint('--s5')} /><path d="M5.500 12h3l1.800-4 3.200 8 1.700-4h3.300" /></>,
+  run: <><circle cx="12" cy="12" r="9" fill={tint('--s2')} /><path d="M10 8.200v7.600l6-3.800z" fill="var(--ink)" /></>,
+};
+
+export function ViewIcon({ name }: { name: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="var(--ink)" strokeWidth="1.700" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {VIEW_ICONS[name] ?? PATHS.info}
     </svg>
   );
 }
@@ -93,8 +122,9 @@ export function Icon({ name, size }: { name: string; size?: number }) {
 export function Shield() {
   return (
     <svg viewBox="0 0 32 32" aria-hidden="true">
-      <path d="M16 2.500 27 6.600v8.200c0 7-4.600 12.300-11 14.700C9.600 27.100 5 21.800 5 14.800V6.600z" fill="var(--accent)" />
-      <path d="M10.500 16.200h3.200l1.800-4.700 2.600 9 1.700-4.300h2.700" fill="none" stroke="var(--on-accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      <path d="M17.500 4.500 28 8.400v7.800c0 6.600-4.400 11.700-10.500 14C11.400 27.900 7 22.800 7 16.200V8.400z" fill="var(--drop)" />
+      <path d="M16 2.800 26.500 6.700v7.800c0 6.600-4.400 11.700-10.500 14C9.900 26.200 5.500 21.100 5.500 14.500V6.700z" fill="var(--go)" stroke="var(--ink)" strokeWidth="1.600" strokeLinejoin="round" />
+      <path d="M10.500 15.600h3.200l1.800-4.500 2.600 8.600 1.700-4.100h2.200" fill="none" stroke="var(--ink)" strokeWidth="1.900" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }

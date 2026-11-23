@@ -1,8 +1,9 @@
 // The shell: navigation rail, command palette, keyboard movement, theme, and the view for the current path.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { get, qs, useApi } from './api';
+import { useLook } from './stage';
 import { when } from './format';
-import { Icon, Link, Mark, RecordHost, Shield, ToastHost, navigate, useRoute } from './ui';
+import { Icon, Link, Mark, RecordHost, Shield, ToastHost, ViewIcon, navigate, useRoute } from './ui';
 import { Now } from './views/Now';
 import { Sessions } from './views/Sessions';
 import { Session } from './views/Session';
@@ -21,7 +22,6 @@ const VIEWS = [
 ];
 
 type Theme = 'system' | 'light' | 'dark';
-const THEME_LABEL: Record<Theme, string> = { system: 'System theme', light: 'Light theme', dark: 'Dark theme' };
 
 function useTheme(): [Theme, () => void] {
   const [theme, setTheme] = useState<Theme>(() => {
@@ -111,6 +111,94 @@ function useKeyboard(openPalette: () => void, mainRef: React.RefObject<HTMLEleme
   }, [openPalette, mainRef]);
 }
 
+const REASON_LABEL: Record<string, string> = {
+  question: 'is waiting for your answer',
+  tool_pending: 'has a tool call that is not finishing',
+  blocked: 'was blocked by a hook',
+  rate_limited: 'is rate limited',
+  finding: 'did something risky',
+  integrity: 'has a transcript that changed',
+};
+
+type AlertState = 'off' | 'on' | 'blocked' | 'unsupported';
+
+/**
+ * Tells you when a session starts needing you: the tab title always carries the count, and, once you
+ * switch them on, the browser shows a notification for each new item. Nothing leaves this machine.
+ */
+function useAlerts(attention: any[] | undefined): [AlertState, () => void] {
+  const supported = typeof window !== 'undefined' && 'Notification' in window;
+  const [wanted, setWanted] = useState(() => {
+    try {
+      return localStorage.getItem('aegis-alerts') === '1';
+    } catch {
+      return false;
+    }
+  });
+  const [permission, setPermission] = useState(() => (supported ? Notification.permission : 'denied'));
+  const seen = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    document.title = attention?.length ? `(${attention.length}) Aegis` : 'Aegis';
+    if (!attention) return;
+    // a session that gains another finding is news again: the count is part of what was seen
+    const keyOf = (a: any) => `${a.reason}|${a.session}|${a.count ?? ''}`;
+    const keys = new Set(attention.map(keyOf));
+    // what was already waiting when the console opened is on screen, not news
+    const before = seen.current;
+    seen.current = keys;
+    if (!before || !wanted || !supported || permission !== 'granted') return;
+    for (const a of attention) {
+      const key = keyOf(a);
+      if (before.has(key)) continue;
+      try {
+        const note = new Notification(`A session ${REASON_LABEL[a.reason] ?? 'needs you'}`, { body: `${a.title}\n${a.detail ?? ''}`.trim(), tag: `${a.reason}|${a.session}` });
+        note.onclick = () => {
+          window.focus();
+          navigate(a.reason === 'integrity' ? '/audit/integrity' : a.reason === 'finding' ? `/audit${qs({ session: a.session })}` : `/sessions/${encodeURIComponent(a.session)}`);
+          note.close();
+        };
+      } catch {
+        /* the browser refused this one; the tab title still shows the count */
+      }
+    }
+  }, [attention, wanted, supported, permission]);
+  const state: AlertState = !supported ? 'unsupported' : wanted && permission === 'granted' ? 'on' : permission === 'denied' ? 'blocked' : 'off';
+  const toggle = () => {
+    if (!supported) return;
+    const save = (on: boolean) => {
+      setWanted(on);
+      try {
+        localStorage.setItem('aegis-alerts', on ? '1' : '0');
+      } catch {
+        /* the choice just does not persist */
+      }
+    };
+    // the browser's answer may have changed in its settings since the console opened
+    setPermission(Notification.permission);
+    if (state === 'on') return save(false);
+    if (Notification.permission === 'granted') return save(true);
+    const answered = (p: NotificationPermission) => {
+      setPermission(p);
+      save(p === 'granted');
+    };
+    try {
+      // older browsers answer through a callback and return nothing
+      const asked = Notification.requestPermission(answered) as Promise<NotificationPermission> | undefined;
+      asked?.then(answered, () => undefined);
+    } catch {
+      /* no permission prompt in this browser */
+    }
+  };
+  return [state, toggle];
+}
+const ALERT_LABEL: Record<AlertState, string> = { on: 'Alerts on', off: 'Alerts off', blocked: 'Alerts blocked', unsupported: 'No alerts here' };
+const ALERT_HINT: Record<AlertState, string> = {
+  on: 'A notification appears when a session starts needing you. Click to switch off.',
+  off: 'Click to get a notification when a session starts needing you.',
+  blocked: 'This browser has notifications blocked for this address. Allow them in the site settings, then click again.',
+  unsupported: 'This browser has no notifications. The tab title still shows how many sessions need you.',
+};
+
 type Entry = { group: string; label: string; hint?: string; go: () => void };
 
 function Palette({ onClose, cycleTheme }: { onClose: () => void; cycleTheme: () => void }) {
@@ -148,7 +236,7 @@ function Palette({ onClose, cycleTheme }: { onClose: () => void; cycleTheme: () 
       { group: 'Go to', label: 'Ops: tools and MCP servers', go: () => navigate('/ops/tools') },
       { group: 'Go to', label: 'Ops: configuration', go: () => navigate('/ops/config') },
       { group: 'Go to', label: 'Ops: doctor checks', go: () => navigate('/ops/doctor') },
-      { group: 'Do', label: 'Switch theme', go: cycleTheme },
+      { group: 'Do', label: 'Switch interface: Hologram or Paper', go: cycleTheme },
       { group: 'Do', label: 'Sessions with errors', go: () => navigate('/sessions?errors=1') },
       { group: 'Do', label: 'Sessions with high-risk actions', go: () => navigate('/sessions?risk=high') },
     ].filter((e) => !q || e.label.toLowerCase().includes(q));
@@ -207,13 +295,18 @@ function Palette({ onClose, cycleTheme }: { onClose: () => void; cycleTheme: () 
 export function App() {
   const route = useRoute();
   const [paletteOpen, setPaletteOpen] = useState(false);
-  const [theme, cycleTheme] = useTheme();
+  const [theme, cyclePaper] = useTheme();
+  const [look, setLook] = useLook();
+  // two interfaces, one switch: the hologram, and the paper console that came before it
+  const switchLook = useMemo(() => () => setLook(look === 'holo' ? 'paper' : 'holo'), [look]);
+  const paperLabel = theme === 'system' ? 'Paper: as the system' : theme === 'light' ? 'Paper: light' : 'Paper: dark';
   const mainRef = useRef<HTMLElement | null>(null);
   const openPalette = useMemo(() => () => setPaletteOpen(true), []);
   useKeyboard(openPalette, mainRef);
   const overview = useApi<any>('/api/overview', 'all');
   const live = useApi<any>('/api/live', 'all');
   const attention = live.data?.attention?.length ?? 0;
+  const [alerts, toggleAlerts] = useAlerts(live.data?.attention);
   const indexing = overview.data?.index?.state === 'indexing';
   useEffect(() => {
     if (!indexing) return;
@@ -227,7 +320,7 @@ export function App() {
 
   const section = '/' + (route.path.split('/')[1] ?? '');
   let view;
-  if (route.path === '/') view = <Now live={live} overview={overview.data} />;
+  if (route.path === '/') view = <Now live={live} overview={overview.data} query={route.query} />;
   else if (route.path === '/sessions') view = <Sessions query={route.query} facets={overview.data?.facets} />;
   else if (route.path.startsWith('/sessions/')) view = <Session id={safeDecode(route.path.slice('/sessions/'.length))} query={route.query} />;
   else if (section === '/audit') view = <Audit tab={route.path.split('/')[2] ?? 'findings'} query={route.query} />;
@@ -252,7 +345,7 @@ export function App() {
             <div className="nav">
               {VIEWS.map((v) => (
                 <Link key={v.path} to={v.path} current={v.path === '/' ? route.path === '/' : section === v.path} title={`${v.label} (g then ${v.key})`}>
-                  <Icon name={v.icon} />
+                  <ViewIcon name={v.icon} />
                   <span>{v.label}</span>
                   {v.path === '/' && attention > 0 ? <b className="count" title={`${attention} need you`}>{attention}</b> : null}
                   <kbd>{v.key}</kbd>
@@ -271,10 +364,23 @@ export function App() {
                 <span className="wide">Search and commands</span>
                 <kbd className="wide">Ctrl K</kbd>
               </button>
-              <button className="linkish row" onClick={cycleTheme} title={`${THEME_LABEL[theme]}. Click to change.`}>
-                <Icon name="theme" size={15} />
-                <span className="wide">{THEME_LABEL[theme]}</span>
+              <button className="linkish row" onClick={toggleAlerts} title={ALERT_HINT[alerts]} aria-pressed={alerts === 'on'}>
+                <Icon name={alerts === 'on' ? 'bell' : 'bellOff'} size={15} />
+                <span className="wide">{ALERT_LABEL[alerts]}</span>
               </button>
+              <div className="seg wide" role="group" aria-label="Interface">
+                <button aria-pressed={look === 'holo'} onClick={() => setLook('holo')} title="The current interface: light on a dark table">Hologram</button>
+                <button aria-pressed={look === 'paper'} onClick={() => setLook('paper')} title="The earlier interface: ink on warm paper">Paper</button>
+              </div>
+              <button className="linkish row narrow-only" onClick={switchLook} title={`Interface: ${look === 'holo' ? 'Hologram' : 'Paper'}. Click to switch.`} aria-label={`Switch to the ${look === 'holo' ? 'Paper' : 'Hologram'} interface`}>
+                <Icon name="swap" size={16} />
+              </button>
+              {look === 'paper' ? (
+                <button className="linkish row" onClick={cyclePaper} title={`${paperLabel}. Click to change.`}>
+                  <Icon name="theme" size={15} />
+                  <span className="wide">{paperLabel}</span>
+                </button>
+              ) : null}
               <div className="wide">
                 {overview.data ? (
                   overview.data.control ? <Mark tone="warn">Control mode: runs can be launched</Mark> : <span>Read-only. v{overview.data.version}</span>
@@ -292,7 +398,7 @@ export function App() {
             )}
           </main>
         </div>
-        {paletteOpen ? <Palette onClose={() => setPaletteOpen(false)} cycleTheme={cycleTheme} /> : null}
+        {paletteOpen ? <Palette onClose={() => setPaletteOpen(false)} cycleTheme={switchLook} /> : null}
       </RecordHost>
     </ToastHost>
   );

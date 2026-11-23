@@ -4,6 +4,7 @@ import { qs, useApi } from '../api';
 import { ChartFrame, Columns, Meter } from '../charts';
 import { dayLabel, duration, int, percent, tzOffset, when } from '../format';
 import { Empty, Link, Mark, Pill, Problem, setQuery } from '../ui';
+import { Stage, type StageEdge, type StageNode } from '../stage';
 
 const TABS = [
   ['health', 'Health'],
@@ -110,6 +111,54 @@ function Health({ query }: { query: URLSearchParams }) {
   );
 }
 
+// the order the harness fires its events in over a session; an event not listed here goes last
+const LIFECYCLE = ['SessionStart', 'UserPromptSubmit', 'PreToolUse', 'PermissionRequest', 'PostToolUse', 'PostToolUseFailure', 'Notification', 'PreCompact', 'SubagentStart', 'SubagentStop', 'Stop', 'SessionEnd'];
+
+/** The hook events as gates along the life of a session, each with what passed and what did not. */
+function Lifecycle({ items }: { items: any[] }) {
+  const built = useMemo(() => {
+    const byEvent = new Map<string, { runs: number; bad: number; blocks: number; commands: number }>();
+    for (const h of items) {
+      const e = byEvent.get(h.event) ?? { runs: 0, bad: 0, blocks: 0, commands: 0 };
+      e.runs += h.runs;
+      e.bad += h.failures + h.blocks;
+      e.blocks += h.blocks;
+      e.commands += 1;
+      byEvent.set(h.event, e);
+    }
+    const order = (e: string) => (LIFECYCLE.indexOf(e) === -1 ? LIFECYCLE.length : LIFECYCLE.indexOf(e));
+    const events = [...byEvent.entries()].sort((a, b) => order(a[0]) - order(b[0]) || a[0].localeCompare(b[0]));
+    const perRow = events.length > 6 ? Math.ceil(events.length / 2) : events.length;
+    const nodes: StageNode[] = events.map(([event, e], i) => {
+      const share = e.runs ? e.bad / e.runs : 0;
+      return {
+        id: event,
+        shape: 'gate',
+        hue: e.bad === 0 ? 'var(--s3)' : 'var(--s4)',
+        at: [110 + (i % perRow) * 180, 130 + Math.floor(i / perRow) * 210],
+        narrowAt: [130, 110 + i * 190],
+        labelRight: false,
+        title: event,
+        sub: `${int(e.runs)} run${e.runs === 1 ? '' : 's'}, ${e.commands} command${e.commands === 1 ? '' : 's'}`,
+        badge: e.bad ? { tone: share > 0.2 ? 'critical' : 'warn', text: `${percent(share)} did not pass` } : { tone: 'good', text: 'all passed' },
+        alert: e.bad && share > 0.2 ? 'critical' : undefined,
+      };
+    });
+    const edges: StageEdge[] = [];
+    events.forEach(([event], i) => {
+      if (i + 1 < events.length && Math.floor(i / perRow) === Math.floor((i + 1) / perRow)) edges.push({ id: event, from: event, to: events[i + 1][0], kind: 'request', packets: 1, seconds: 2.4 });
+    });
+    const rows = Math.ceil(events.length / Math.max(1, perRow));
+    return { nodes, edges, size: [220 + (perRow - 1) * 180, 60 + rows * 210] as [number, number], narrowSize: [400, 110 + events.length * 190] as [number, number] };
+  }, [items]);
+  if (built.nodes.length === 0) return null;
+  return (
+    <div style={{ marginBottom: 18 }}>
+      <Stage nodes={built.nodes} edges={built.edges} size={built.size} narrowSize={built.narrowSize} label="Hook events in the order a session reaches them, with the share of runs that failed at each." />
+    </div>
+  );
+}
+
 function Hooks({ query }: { query: URLSearchParams }) {
   const range = useRange(query);
   const hooks = useApi<any>(`/api/ops/hooks${qs({ from: range.from, to: range.to })}`, 'all');
@@ -118,6 +167,7 @@ function Hooks({ query }: { query: URLSearchParams }) {
     <>
       <div className="filters"><RangePicker days={range.days} /></div>
       <Problem error={hooks.error} />
+      <Lifecycle items={items} />
       <div className="panel table-wrap">
         {items.length === 0 && !hooks.loading ? (
           <Empty title="No hook ran in this range">Hooks defined in settings and by plugins show here once they run.</Empty>

@@ -5,15 +5,16 @@ import { lockStateDir, openDb, prepareStateDir, type Db } from './db.ts';
 import { Indexer, KNOWN_TYPES } from './indexer.ts';
 import { loadPrices } from './pricing.ts';
 import { FrontDoor, Router, enumParam, optEnumParam, optIntParam, page, strParam } from './http.ts';
-import { facets, getSession, listSessions, projects } from './sessions.ts';
-import { Timelines, contextSeries, filesTouched } from './timeline.ts';
+import { facets, getSession, listSessions, projects, sessionShapes } from './sessions.ts';
+import { Timelines, contextSeries, fileHeat, filesTouched } from './timeline.ts';
 import { Activity } from './activity.ts';
 import { LEDGER_CATEGORIES, OUTCOMES, ackIntegrity, exportFindings, exportLedger, findings, integrity, ledger, triage, type FindingFilter, type LedgerFilter } from './audit.ts';
 import { rebuild } from './db.ts';
 import { Live } from './live.ts';
 import { Runs, resolveBinary } from './runs.ts';
 import { doctor, hookStats, inventory, opsSeries, toolStats } from './inventory.ts';
-import { GROUPS, costSeries, resolveRange, topSessions } from './cost.ts';
+import { GROUPS, costFlow, costSeries, resolveRange, topSessions } from './cost.ts';
+import { harnessMap } from './map.ts';
 import { HANDLED } from './http.ts';
 import { intParam, notFound } from './http.ts';
 
@@ -105,13 +106,16 @@ export async function createApp(options: AppOptions): Promise<App> {
       entrypoint: strParam(query, 'entrypoint'),
       from: optIntParam(query, 'from'),
       to: optIntParam(query, 'to'),
+      callsFrom: optIntParam(query, 'callsFrom'),
+      callsTo: optIntParam(query, 'callsTo'),
       errors: query.get('errors') === '1',
       risk: optEnumParam(query, 'risk', SEVERITIES),
       ids: query.get('live') === '1' ? [...running] : null,
       sort: enumParam(query, 'sort', ['last', 'cost', 'duration'] as const, 'last'),
       ...page(query),
     });
-    return { ...result, items: result.items.map((s) => ({ ...s, live: running.has(s.id) })) };
+    const shapes = query.get('shape') === '1' ? sessionShapes(db, result.items.map((s) => ({ id: s.id, stamp: [s.lastTs, s.apiCalls, s.toolCalls, s.toolErrors, s.toolDenied, s.apiErrors, s.hookFailures, s.prompts].join(':') }))) : null;
+    return { ...result, items: result.items.map((s) => ({ ...s, live: running.has(s.id), ...(shapes ? { shape: shapes.get(s.id) ?? [] } : {}) })) };
   });
 
   router.get('/api/sessions/:id', ({ params }) => ({ ...getSession(db, params.id), live: live.runningIds().has(params.id) }));
@@ -129,6 +133,9 @@ export async function createApp(options: AppOptions): Promise<App> {
 
   router.get('/api/sessions/:id/timeline', ({ params, query }) =>
     timelines.timeline(params.id, agentParam(query), intParam(query, 'offset', 0, 0, 100_000_000), intParam(query, 'limit', 300, 1, 1000)),
+  );
+  router.get('/api/sessions/:id/path', ({ params, query }) =>
+    timelines.path(params.id, agentParam(query), intParam(query, 'offset', 0, 0, 100_000_000), intParam(query, 'limit', 1000, 1, 2000)),
   );
   router.get('/api/sessions/:id/context', ({ params, query }) => contextSeries(db, timelines.fileOf(params.id, agentParam(query))));
   router.get('/api/sessions/:id/files', ({ params }) => {
@@ -217,6 +224,10 @@ export async function createApp(options: AppOptions): Promise<App> {
     resolveRange(optIntParam(query, 'from'), optIntParam(query, 'to'), enumParam(query, 'bucket', ['day', 'hour'] as const, 'day'), intParam(query, 'tz', 0, -840, 840), now());
 
   router.get('/api/cost/series', ({ query }) => costSeries(db, rangeOf(query), enumParam(query, 'group', GROUPS, 'model')));
+  router.get('/api/cost/flow', ({ query }) => {
+    const range = rangeOf(query);
+    return costFlow(db, range.from, range.to);
+  });
   router.get('/api/cost/top', ({ query }) => {
     const range = rangeOf(query);
     return topSessions(db, range.from, range.to, intParam(query, 'limit', 10, 1, 100));
@@ -230,6 +241,14 @@ export async function createApp(options: AppOptions): Promise<App> {
   router.get('/api/ops/tools', ({ query }) => {
     const { from, to } = span(query);
     return toolStats(db, from, to);
+  });
+  router.get('/api/files/heat', ({ query }) => {
+    const { from, to } = span(query);
+    return fileHeat(db, from, to, { project: strParam(query, 'project'), under: strParam(query, 'under', 1000), folders: query.get('group') === 'folder', limit: intParam(query, 'limit', 150, 1, 500) });
+  });
+  router.get('/api/map', ({ query }) => {
+    const { from, to } = span(query);
+    return harnessMap(db, from, to);
   });
   router.get('/api/ops/series', ({ query }) => opsSeries(db, rangeOf(query)));
   router.get('/api/ops/inventory', () => {

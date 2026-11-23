@@ -6,6 +6,7 @@ import { notFound } from './http.ts';
 import { MAX_LINE, promptOrigin, shapeTool } from './indexer.ts';
 import { forEachLine, realPathInside } from './lines.ts';
 import { mask, maskDeep } from './redact.ts';
+import { buildPath } from './path.ts';
 
 const TEXT_MAX = 4000;
 const RECORD_MAX = 256 * 1024;
@@ -35,6 +36,7 @@ export class Timelines {
   private claudeHome: string;
   private projectsDir: string;
   private cache = new Map<string, Item[]>();
+  private paths = new Map<string, ReturnType<typeof buildPath>>();
 
   private maxLine: number;
 
@@ -82,6 +84,20 @@ export class Timelines {
       if (this.cache.size > 6) this.cache.delete(this.cache.keys().next().value!);
     }
     return { file: file.id, agentId: file.agent_id, total: items.length, offset, limit, items: items.slice(offset, offset + limit) };
+  }
+
+  /** The machinery a session went through, in order (see path.ts). Kept until the transcript grows. */
+  path(sessionId: string, agentId: string | null, offset: number, limit: number) {
+    const file = this.fileOf(sessionId, agentId);
+    this.readable(file);
+    const key = `${file.id}:${file.offset}`;
+    let built = this.paths.get(key);
+    if (!built) {
+      built = buildPath(file, this.maxLine, file.agent_id !== null);
+      this.paths.set(key, built);
+      if (this.paths.size > 6) this.paths.delete(this.paths.keys().next().value!);
+    }
+    return { file: file.id, agentId: file.agent_id, total: built.steps.length, offset, limit, steps: built.steps.slice(offset, offset + limit), summary: built.summary };
   }
 
   private build(file: FileRef): Item[] {
@@ -309,4 +325,44 @@ export function filesTouched(db: Db, sessionId: string) {
     )
     .all(sessionId) as any[];
   return { items: rows.map((r) => ({ path: mask(r.path), read: r.read, edit: r.edit, write: r.write })), total: rows.length };
+}
+
+const HEAT_ROWS = 200_000;
+
+/**
+ * The files (or, with `folders`, the folders) touched most across sessions that were active in a span,
+ * optionally of one project and optionally only the files directly in one folder (which is what a folder's
+ * tile counts). Paths are masked before anything else, so `under` is matched against what the console was shown.
+ * A touch has no time of its own: a span takes every touch of the sessions that were active in it.
+ */
+export function fileHeat(db: Db, from: number, to: number, o: { project: string | null; under: string | null; folders: boolean; limit: number }) {
+  const where = `s.last_ts >= ? AND s.first_ts <= ?${o.project ? ' AND s.project = ?' : ''}`;
+  const args = o.project ? [from, to, o.project] : [from, to];
+  const rows = db.prepare(`SELECT t.path, t.session_id, t.op, t.n FROM file_touch t JOIN sessions s ON s.id = t.session_id WHERE ${where} ORDER BY s.last_ts DESC, t.path LIMIT ${HEAT_ROWS}`).all(...args) as Array<{ path: string; session_id: string; op: string; n: number }>;
+  type Sum = { read: number; edit: number; write: number; sessions: Set<string>; files: Set<string> };
+  const groups = new Map<string, Sum>();
+  const shown = new Map<string, string>();
+  const files = new Set<string>();
+  let touches = 0;
+  const folderOf = (path: string) => {
+    const cut = path.lastIndexOf('/');
+    return cut > 0 ? path.slice(0, cut) : cut === 0 ? '/' : '(no folder)';
+  };
+  for (const r of rows) {
+    let path = shown.get(r.path);
+    if (path === undefined) shown.set(r.path, (path = mask(r.path)));
+    if (o.under !== null && folderOf(path) !== o.under) continue;
+    files.add(path);
+    touches += r.n;
+    const key = o.folders ? folderOf(path) : path;
+    let g = groups.get(key);
+    if (!g) groups.set(key, (g = { read: 0, edit: 0, write: 0, sessions: new Set(), files: new Set() }));
+    if (r.op === 'read' || r.op === 'edit' || r.op === 'write') g[r.op] += r.n;
+    g.sessions.add(r.session_id);
+    g.files.add(path);
+  }
+  const items = [...groups.entries()]
+    .map(([path, g]) => ({ path, read: g.read, edit: g.edit, write: g.write, sessions: g.sessions.size, files: g.files.size }))
+    .sort((a, b) => b.read + b.edit + b.write - (a.read + a.edit + a.write) || a.path.localeCompare(b.path));
+  return { from, to, folders: o.folders, under: o.under, files: files.size, touches, groups: items.length, truncated: rows.length >= HEAT_ROWS, items: items.slice(0, o.limit) };
 }

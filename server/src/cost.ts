@@ -114,3 +114,15 @@ export function topSessions(db: Db, from: number, to: number, limit: number) {
     .all(from, to, limit) as any[];
   return { from, to, items: rows.map((r) => ({ ...r, title: r.title ?? '(untitled)' })) };
 }
+
+/** Spend in a range split three ways at once: the project, the model, and who spent it (the main thread or a kind of subagent). */
+export function costFlow(db: Db, from: number, to: number) {
+  const rows = db
+    .prepare(
+      `SELECT s.project project, ${GROUP_SQL.model} model, ${GROUP_SQL.agent} agent, COALESCE(SUM(c.cost), 0) cost, COUNT(*) calls, COALESCE(SUM(c.cost IS NULL), 0) unpriced
+       FROM api_calls c JOIN sessions s ON s.id = c.session_id JOIN files f ON f.id = c.file_id
+       WHERE c.ts >= ? AND c.ts <= ? GROUP BY 1, 2, 3 ORDER BY cost DESC, calls DESC, 1, 2, 3`,
+    )
+    .all(from, to) as Array<{ project: string; model: string; agent: string; cost: number; calls: number; unpriced: number }>;
+  return { from, to, total: rows.reduce((n, r) => n + r.cost, 0), rows };
+}

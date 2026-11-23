@@ -309,7 +309,7 @@ export function richHome(): Home {
       id: 'r1',
       usage: { input: 100, cacheRead: 900, output: 10 },
       content: [rec.text('Deploying the zebra now'), rec.toolUse('t1', 'Bash', { command: 'git push --force origin main' })],
-      extra: { attributionSkill: 'tea-sdlc:ship', attributionPlugin: 'tea-sdlc' },
+      extra: { attributionSkill: 'aegisops-harness:ship', attributionPlugin: 'aegisops-harness' },
     }),
     rec.toolResult(b(4), 't1', { content: `pushed with ${SECRETS.github}`, perm: { decision: 'accept', source: 'config', reasonType: 'classifier' } }),
     rec.assistant(b(5), {

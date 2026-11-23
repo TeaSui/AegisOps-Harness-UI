@@ -215,3 +215,23 @@ test('AEGIS-24 a group named like an object property cannot corrupt the totals',
     home.destroy();
   }
 });
+
+test('AEGIS-42 the money flow gives spend per project, model and who spent it, summing to the series total', () =>
+  withCost(async (c) => {
+    const flow = await c.get(`/api/cost/flow?${RANGE}`);
+    assert.deepEqual(
+      flow.rows.map((r: any) => [r.project, r.model, r.agent, Math.round(r.cost * 1000) / 1000, r.calls, r.unpriced]),
+      [
+        ['-work-alpha', 'm-cheap', 'code-reviewer', 5, 1, 0],
+        ['-work-alpha', 'm-cheap', 'main', 1, 1, 0],
+        ['-work-alpha', 'm-priced', 'main', 0.137, 1, 0],
+        ['-work-beta', 'm-priced', 'main', 0.05, 1, 0],
+        ['-work-alpha', 'mystery-9', 'main', 0, 1, 1],
+      ],
+    );
+    near(flow.total, 6.187);
+    near(flow.total, (await c.get(`/api/cost/series?${RANGE}&bucket=day&tz=0`)).totals.cost);
+    // a narrower range drops what is outside it
+    const day2 = await c.get(`/api/cost/flow?from=${at('2026-11-21T00:00:00Z')}&to=${at('2026-11-21T23:59:59Z')}`);
+    assert.deepEqual(day2.rows.map((r: any) => r.model), ['m-priced', 'mystery-9']);
+  }));
